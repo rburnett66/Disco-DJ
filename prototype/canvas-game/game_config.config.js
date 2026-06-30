@@ -9,35 +9,31 @@ window.GAME_CONFIG = {
   },
   "first": "MENU",
   "labels": {
-    "characterPrompt": "Pick your DJ and enter a stage name",
-    "locationPrompt": "Choose your nightclub venue",
-    "locationCta": "Confirm Gear",
-    "action": "Cue Record",
-    "finish": "Roll Home",
+    "characterPrompt": "Pick your DJ and enter your stage name",
+    "locationPrompt": "Choose your nightclub",
+    "locationCta": "Confirm Venue",
+    "action": "Drop the Track",
+    "finish": "Roll to Home Booth",
     "count": "Booths Dropped",
     "results": "Set Results",
     "unit": "booths",
-    "item": "booth",
-    "playAgain": "Play Again",
+    "item": "Gear",
+    "playAgain": "Spin Again",
     "home": "Menu",
-    "miniGame": "Track Drop",
+    "miniGame": "Track-Drop Rhythm",
     "tiers": [
       "",
-      "Local Opener",
-      "Club Resident",
-      "Headliner"
+      "Bronze Spinner",
+      "Silver Mixer",
+      "Gold Headliner"
     ]
   },
   "assets": {
     "screens": {
       "SC_scrab5f1vj": "content/screens/SC_scrab5f1vj.png",
       "SC_scru4678ee": "content/screens/SC_scru4678ee.png",
-      "SC_screr2mf9n": "content/screens/SC_screr2mf9n.png",
-      "SC_scrrskt6dn": "content/screens/SC_scrrskt6dn.png",
-      "SC_scrae09vxa": "content/screens/SC_scrae09vxa.png",
-      "SC_scrm8rpgxd": "content/screens/SC_scrm8rpgxd.png",
-      "SC_scr29xml07": "content/screens/SC_scr29xml07.png",
       "SC_scrgc083l1": "content/screens/SC_scrgc083l1.png",
+      "SC_scr29xml07": "content/screens/SC_scr29xml07.png",
       "SC_scrxn5t664": "content/screens/SC_scrxn5t664.png",
       "SC_scrp1kdjvt": "content/screens/SC_scrp1kdjvt.png"
     },
@@ -45,7 +41,7 @@ window.GAME_CONFIG = {
   },
   "data": {
     "sessionSeconds": 120,
-    "resultsState": "RESULTSREWARDS",
+    "resultsState": "MENU",
     "avatarSprite": "avatar",
     "charIndex": 0,
     "locationIndex": 0,
@@ -64,54 +60,54 @@ window.GAME_CONFIG = {
     ],
     "locations": [
       {
-        "name": "Mellow Lounge",
+        "name": "Neon Underground",
         "diff": "1",
         "mix": [
-          3,
+          2,
           1,
           1,
-          0,
+          1,
           0
         ]
       },
       {
-        "name": "Neon Club",
+        "name": "Funk Palace",
         "diff": "2",
         "mix": [
-          2,
+          1,
           2,
           1,
-          0,
+          1,
           0
         ]
       },
       {
-        "name": "Laser Palace",
+        "name": "Laser Loft",
         "diff": "3",
         "mix": [
           1,
           1,
-          2,
           1,
-          0
+          1,
+          1
         ]
       },
       {
-        "name": "Mega Disco",
+        "name": "Mirrorball Megaclub",
         "diff": "4",
         "mix": [
           0,
           1,
           1,
-          2,
-          1
+          1,
+          2
         ]
       }
     ],
     "gear": [
       {
         "label": "Deck",
-        "name": "Battered Dual Turntable "
+        "name": "Battered Dual Turntable"
       },
       {
         "label": "Mixer",
@@ -122,8 +118,8 @@ window.GAME_CONFIG = {
         "name": "Bronze Needle"
       },
       {
-        "label": "Speaker",
-        "name": "60-Watt Speaker Stack"
+        "label": "Speaker Rig",
+        "name": "60-Watt Stack"
       }
     ],
     "itemTypes": [
@@ -148,42 +144,25 @@ window.GAME_CONFIG = {
   "states": [
     {
       "name": "MENU",
-      "screen": "Menu",
+      "screen": "Stub",
       "cfg": {
         "title": "MENU",
         "navLabels": [
-          "CHOOSELOCATION",
-          "STORE",
-          "SETTINGS",
-          "CHARACTOR",
-          "INVENTORY",
-          "HELP",
-          "GAMEPLAY"
+          "CHOOSELOCATION"
         ],
         "labels": [
-          "CHOOSELOCATION",
-          "STORE",
-          "SETTINGS",
-          "CHARACTOR",
-          "INVENTORY",
-          "HELP",
-          "GAMEPLAY"
+          "CHOOSELOCATION"
         ],
-        "asset": "SC_scrab5f1vj"
+        "asset": "SC_scrab5f1vj",
+        "back": "CHOOSELOCATION"
       },
       "next": [
-        "CHOOSELOCATION",
-        "STORE",
-        "SETTINGS",
-        "CHARACTOR",
-        "INVENTORY",
-        "HELP",
-        "GAMEPLAY"
+        "CHOOSELOCATION"
       ]
     },
     {
       "name": "CHOOSELOCATION",
-      "screen": "Screen",
+      "screen": "Stub",
       "cfg": {
         "title": "CHOOSE LOCATION",
         "navLabels": [
@@ -192,115 +171,16 @@ window.GAME_CONFIG = {
         "labels": [
           "CHOOSEGEAR"
         ],
-        "asset": "SC_scru4678ee"
+        "asset": "SC_scru4678ee",
+        "back": "CHOOSEGEAR"
       },
       "next": [
         "CHOOSEGEAR"
       ]
     },
     {
-      "name": "STORE",
-      "screen": "GearSelect",
-      "cfg": {
-        "title": "STORE",
-        "navLabels": [
-          "MENU"
-        ],
-        "labels": [
-          "MENU"
-        ],
-        "asset": "SC_scrrskt6dn"
-      },
-      "next": [
-        "MENU"
-      ]
-    },
-    {
-      "name": "SETTINGS",
-      "screen": "Screen",
-      "cfg": {
-        "title": "SETTINGS",
-        "navLabels": [
-          "MENU"
-        ],
-        "labels": [
-          "MENU"
-        ],
-        "asset": "SC_screr2mf9n"
-      },
-      "next": [
-        "MENU"
-      ]
-    },
-    {
-      "name": "CHARACTOR",
-      "screen": "CharacterSelect",
-      "cfg": {
-        "title": "CHARACTOR",
-        "navLabels": [
-          "MENU"
-        ],
-        "labels": [
-          "MENU"
-        ],
-        "asset": "SC_scrm8rpgxd"
-      },
-      "next": [
-        "MENU"
-      ]
-    },
-    {
-      "name": "INVENTORY",
-      "screen": "GearSelect",
-      "cfg": {
-        "title": "INVENTORY",
-        "navLabels": [
-          "MENU"
-        ],
-        "labels": [
-          "MENU"
-        ],
-        "asset": "SC_scrae09vxa"
-      },
-      "next": [
-        "MENU"
-      ]
-    },
-    {
-      "name": "HELP",
-      "screen": "Screen",
-      "cfg": {
-        "title": "HELP",
-        "navLabels": [
-          "MENU"
-        ],
-        "labels": [
-          "MENU"
-        ]
-      },
-      "next": [
-        "MENU"
-      ]
-    },
-    {
-      "name": "GAMEPLAY",
-      "screen": "PlayField",
-      "cfg": {
-        "title": "LEADERBOARD",
-        "navLabels": [
-          "MENU"
-        ],
-        "labels": [
-          "MENU"
-        ]
-      },
-      "next": [
-        "MENU"
-      ]
-    },
-    {
       "name": "CHOOSEGEAR",
-      "screen": "GearSelect",
+      "screen": "Stub",
       "cfg": {
         "title": "CHOOSE GEAR",
         "navLabels": [
@@ -309,7 +189,8 @@ window.GAME_CONFIG = {
         "labels": [
           "Lets Dance"
         ],
-        "asset": "SC_scrgc083l1"
+        "asset": "SC_scrgc083l1",
+        "back": "COREGAME"
       },
       "next": [
         "COREGAME"
@@ -321,20 +202,20 @@ window.GAME_CONFIG = {
       "cfg": {
         "title": "CORE GAME",
         "navLabels": [
-          "RESULTSREWARDS"
+          "GAMEPLAY"
         ],
         "labels": [
-          "RESULTSREWARDS"
+          "GAMEPLAY"
         ],
         "asset": "SC_scrp1kdjvt"
       },
       "next": [
-        "RESULTSREWARDS"
+        "GAMEPLAY"
       ]
     },
     {
-      "name": "RESULTSREWARDS",
-      "screen": "Results",
+      "name": "GAMEPLAY",
+      "screen": "PlayField",
       "cfg": {
         "title": "RESULTS REWARDS",
         "navLabels": [

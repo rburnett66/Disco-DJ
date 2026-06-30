@@ -2,687 +2,693 @@
 MMKit.mechanics.NeonPlay = function (config, game) {
   var W = R.W, H = R.H;
 
-  // ---------- helpers ----------
-  function num(v, d) { return (typeof v === 'number' && isFinite(v)) ? v : d; }
-  function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
-
-  // ---------- avatars / tracks ----------
-  var AVATARS = [
-    { name: 'NOVA',  color: '#22ffff', bpm: 96,  desc: 'Synthwave' },
-    { name: 'BLAZE', color: '#ff5588', bpm: 120, desc: 'Electro House' },
-    { name: 'VOLT',  color: '#ffdd33', bpm: 140, desc: 'Drum & Bass' },
-    { name: 'ECHO',  color: '#aa66ff', bpm: 108, desc: 'Deep Tech' }
-  ];
-
-  // ---------- synth audio (real track to score to) ----------
-  var AC = null;
-  try { AC = (window.AudioContext || window.webkitAudioContext) ? new (window.AudioContext || window.webkitAudioContext)() : null; } catch (e) { AC = null; }
-  var masterGain = null;
-  if (AC) { masterGain = AC.createGain(); masterGain.gain.value = 0.18; masterGain.connect(AC.destination); }
-
-  function beep(freq, dur, type) {
-    if (!AC) return;
-    try {
-      if (AC.state === 'suspended') AC.resume();
-      var o = AC.createOscillator(), g = AC.createGain();
-      o.type = type || 'square';
-      o.frequency.value = freq;
-      g.gain.setValueAtTime(0.0001, AC.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.5, AC.currentTime + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + dur);
-      o.connect(g); g.connect(masterGain);
-      o.start(); o.stop(AC.currentTime + dur + 0.02);
-    } catch (e) {}
+  // =========================================================
+  //  PERSISTENT / SHARED GAME META (avatar, name, loadout)
+  // =========================================================
+  game.dj = game.dj || {};
+  if (!game.dj.avatar) {
+    // defaults if selection screen wasn't visited
+    game.dj.avatar = { key: 'dj_pulse', name: 'Pulse', track: 'neon_drive', tint: '#0ff' };
   }
+  if (!game.dj.name) game.dj.name = 'DJ ' + game.dj.avatar.name;
 
-  // background music loop driven by booth bpm + avatar
-  var music = { t: 0, beat: 0, bpm: 96, base: 110, on: false };
-  function startMusic(bpm, base) { music.bpm = bpm; music.base = base; music.t = 0; music.beat = 0; music.on = true; }
-  function stopMusic() { music.on = false; }
-  function tickMusic(dt) {
-    if (!music.on) return;
-    music.t += dt;
-    var beatLen = 60 / music.bpm;
-    if (music.t >= beatLen) {
-      music.t -= beatLen;
-      music.beat++;
-      var b = music.beat % 4;
-      if (b === 0) beep(music.base, 0.12, 'sine');       // kick
-      else beep(music.base * (1 + (b % 2)), 0.07, 'triangle');
-      if (b === 2) beep(music.base * 4, 0.04, 'square');
-    }
-  }
-
-  // ---------- core set state ----------
-  game.score = 0;
-  game.timer = 120;
-  game.hype = 0;            // running Crowd Hype (live)
-  game.bankedHype = 0;      // banked at booths (locked-in)
-  game.deadAir = 0;
-  game.combo = 0;
-  game.comboMult = 1;
-  game.biggestStreak = 0;
-  game.bonusesTriggered = 0;
-  game.crowdSize = 0;
-  game.boothsDropped = 0;
-  game.resultsState = game.resultsState || 'RESULTS';
-
-  // ---------- loadout (weakest start) ----------
-  var loadout = {
-    needleWindow: 38,    // px good window (bronze narrow)
-    perfectWindow: 14,   // px perfect
-    needleMult: 1.0,
-    speakerGain: 1.0,
-    faderChannels: 2,
-    workingFaders: 1
+  // weakest loadout always (no progression persisted, as per rules)
+  game.loadout = game.loadout || {
+    deck: 'Battered Dual Turntable',
+    mixer: '2-Channel (1 working fader)',
+    needle: 'Bronze',
+    needleWindowMul: 1.0,   // narrow
+    needleMult: 1.0,        // low multiplier
+    speaker: '60-Watt Stack',
+    speakerScale: 0.7       // small hype gain
   };
 
-  // ---------- procedural floor + booths ----------
-  var home = { x: W * 0.5, y: H * 0.86 };
-  var seed = (Date.now() & 0xffff) ^ 0x5a3c;
-  function rng() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+  game.score = 0;
+  game.resultsState = game.resultsState || 'RESULTS';
 
-  var booths = [];
+  // =========================================================
+  //  STATE
+  // =========================================================
+  var ld = game.loadout;
+  var tint = game.dj.avatar.tint || '#0ff';
+
+  var state = {
+    timer: 120,
+    cart: { x: W * 0.5, y: H * 0.85, vx: 0, vy: 0 },
+    home: { x: W * 0.5, y: H * 0.9 },
+    booths: [],
+    dropped: 0,
+    mode: 'roam',            // roam | rhythm | returning | done
+    activeBooth: null,
+    hype: 0,
+    deadAir: 0,
+    combo: 0,
+    multiplier: 1,
+    bestStreak: 0,
+    streak: 0,
+    bonusesTriggered: 0,
+    crowd: 0,
+    particles: [],
+    floaties: [],
+    bonuses: { panel: 0, laser: 0, disco: 0, balloon: 0 },
+    distBonus: 0,
+    cueHint: 0
+  };
+  game.set = state;
+
+  // beat clock for music-synced flashing (avatar track tempo feel)
+  var beatClock = 0;
+
+  // =========================================================
+  //  PROCEDURAL BOOTH LAYOUT (distance-ranked difficulty)
+  // =========================================================
   (function genBooths() {
-    var placed = [];
-    for (var i = 0; i < 5; i++) {
-      var bx, by, tries = 0, ok;
-      do {
-        bx = 70 + rng() * (W - 140);
-        by = 60 + rng() * (H * 0.6);
-        ok = true;
-        for (var p = 0; p < placed.length; p++) {
-          if (Math.hypot(bx - placed[p].x, by - placed[p].y) < 110) { ok = false; break; }
-        }
-        if (Math.hypot(bx - home.x, by - home.y) < 120) ok = false;
-        tries++;
-      } while (!ok && tries < 40);
-      placed.push({ x: bx, y: by });
+    var rng = (config && config.seed ? config.seed : 0) || ((Date.now() & 0xffff) + 12345);
+    function rand() { rng = (rng * 1103515245 + 12345) & 0x7fffffff; return rng / 0x7fffffff; }
+
+    var raw = [];
+    var tries = 0;
+    while (raw.length < 5 && tries < 400) {
+      tries++;
+      var bx = 70 + rand() * (W - 140);
+      var by = 70 + rand() * (H * 0.6);
+      var ok = true;
+      for (var j = 0; j < raw.length; j++) {
+        if (Math.hypot(bx - raw[j].x, by - raw[j].y) < 90) { ok = false; break; }
+      }
+      if (Math.hypot(bx - state.home.x, by - state.home.y) < 70) ok = false;
+      if (ok) raw.push({ x: bx, y: by });
     }
-    // sort by distance: near = easy, far = hard
-    placed.sort(function (a, b) {
-      return Math.hypot(a.x - home.x, a.y - home.y) - Math.hypot(b.x - home.x, b.y - home.y);
+    while (raw.length < 5) {
+      raw.push({ x: 70 + (raw.length * (W - 140) / 5), y: 90 + raw.length * 40 });
+    }
+
+    // sort by distance from home -> nearest = easiest
+    raw.sort(function (a, b) {
+      return Math.hypot(a.x - state.home.x, a.y - state.home.y) -
+             Math.hypot(b.x - state.home.x, b.y - state.home.y);
     });
-    for (var j = 0; j < placed.length; j++) {
-      var dist = Math.hypot(placed[j].x - home.x, placed[j].y - home.y);
-      booths.push({
-        x: placed[j].x, y: placed[j].y,
-        idx: j,
-        dist: dist,
+
+    for (var i = 0; i < 5; i++) {
+      var dist = Math.hypot(raw[i].x - state.home.x, raw[i].y - state.home.y);
+      state.booths.push({
+        x: raw[i].x, y: raw[i].y,
+        r: 28,
+        rank: i,
         dropped: false,
-        bpm: 80 + j * 22,
-        density: 0.85 + j * 0.32,
-        payout: Math.round(150 + dist * 0.7 + j * 60)
+        bpm: 80 + i * 22,                       // 80..168
+        density: 0.8 + i * 0.35,
+        noteCount: 12 + i * 3,
+        noteSpeed: 3.6 + i * 0.7,
+        payout: Math.round(180 + dist * 0.6 + i * 130),
+        dist: dist,
+        pulse: Math.random() * Math.PI * 2
       });
     }
   })();
-  game.booths = booths;
 
-  // ---------- deck cart momentum ----------
-  var cart = {
-    x: home.x, y: home.y, vx: 0, vy: 0,
-    accel: 460, dragFwd: 2.7, dragLat: 1.05, maxV: 360,
-    facing: -Math.PI / 2, r: 18
-  };
+  // =========================================================
+  //  RHYTHM SUB-STATE
+  // =========================================================
+  var rhythm = null;
+  var DROP_LINE = H - 90;
 
-  // ---------- mode / phase ----------
-  // phases: AVATAR, NAME, ROAM, RHYTHM, RETURN
-  var phase = 'AVATAR';
-  var selAvatar = 0;
-  var djName = '';
-  var avatar = AVATARS[0];
-  var setEnded = false;
+  function laneX(lane) {
+    var cx = W * 0.5;
+    return lane === 0 ? cx - 80 : cx + 80;
+  }
 
-  // ---------- mini-game ----------
-  var mg = null;
-  var dropLineY = H - 110;
-  var laneX = [W / 2 - 100, W / 2 + 100];
+  function startRhythm(booth) {
+    state.mode = 'rhythm';
+    state.activeBooth = booth;
+    rhythm = {
+      booth: booth,
+      notes: [],
+      spawnTimer: 0,
+      interval: 60 / booth.bpm,
+      lane: 0,
+      markerX: laneX(0),
+      misses: 0,
+      cleared: 0,
+      total: booth.noteCount,
+      spawned: 0,
+      noteSpeed: booth.noteSpeed,
+      whiffed: false,
+      done: false,
+      endHold: 0,
+      result: '',
+      resultTimer: 0,
+      resultCol: '#fff'
+    };
+    state.cart.vx *= 0.2; state.cart.vy *= 0.2;
+  }
 
-  // ---------- mixer / fader ----------
-  var fader = { v: 0.5, target: 0.5 }; // 0..1; affects hype gain band
+  function endRhythm() {
+    rhythm = null;
+    state.activeBooth = null;
+    state.mode = 'roam';
+    if (state.dropped >= 5) beginReturn();
+  }
 
-  // ---------- bonuses (stackable dance-floor) ----------
-  var bonuses = [
-    { key: 'a', streak: 3, t: 0, dur: 5, name: 'FLOOR', color: '#22ff88' },
-    { key: 's', streak: 5, t: 0, dur: 5, name: 'LASER', color: '#ff44dd' },
-    { key: 'd', streak: 7, t: 0, dur: 5, name: 'DISCO', color: '#ffdd33' },
-    { key: 'f', streak: 9, t: 0, dur: 5, name: 'BALLOON', color: '#66ddff' }
-  ];
-  function activeBonusMult() {
+  // =========================================================
+  //  PARTICLES & FLOATERS (juice)
+  // =========================================================
+  function burst(x, y, color, n, spd) {
+    for (var i = 0; i < n; i++) {
+      var a = Math.random() * Math.PI * 2;
+      var s = spd * (0.4 + Math.random() * 0.8);
+      state.particles.push({
+        x: x, y: y,
+        vx: Math.cos(a) * s, vy: Math.sin(a) * s,
+        life: 0.5 + Math.random() * 0.4,
+        color: color, size: 2 + Math.random() * 3
+      });
+    }
+  }
+  function floaty(x, y, text, color) {
+    state.floaties.push({ x: x, y: y, text: text, color: color, life: 1.0 });
+  }
+
+  // =========================================================
+  //  SCORING
+  // =========================================================
+  function activeBonusMul() {
     var m = 1;
-    for (var b = 0; b < bonuses.length; b++) if (bonuses[b].t > 0) m += 0.12;
+    var k = ['panel', 'laser', 'disco', 'balloon'];
+    for (var i = 0; i < k.length; i++) if (state.bonuses[k[i]] > 0) m += 0.1;
     return m;
   }
 
-  // ---------- juice ----------
-  var particles = [];
-  function burst(x, y, color, n, spd) {
-    for (var k = 0; k < n; k++) {
-      var a = Math.random() * Math.PI * 2, s = spd * (0.3 + Math.random());
-      particles.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.6 + Math.random() * 0.4, color: color, r: 2 + Math.random() * 3 });
-    }
-  }
-  var shake = 0;
-  function addShake(v) { shake = Math.min(shake + v, 16); }
-  var feedText = null, feedTimer = 0, feedColor = '#fff';
-  function showFeed(t, c) { feedText = t; feedTimer = 0.7; feedColor = c; }
-
-  // ============================================================
-  //  SCORE
-  // ============================================================
   function recomputeScore() {
-    var distBonus = 0;
-    for (var i = 0; i < booths.length; i++) if (booths[i].dropped) distBonus += booths[i].payout;
-    var live = (game.bankedHype + game.hype) * game.comboMult * activeBonusMult() + distBonus;
-    live -= game.deadAir * 4;
-    game.score = Math.max(0, Math.floor(live));
+    var deadFactor = Math.max(0.2, 1 - state.deadAir * 0.02);
+    var sc = state.hype * state.multiplier * activeBonusMul() * deadFactor;
+    sc += state.distBonus;
+    state.score = Math.round(sc);
+    game.score = state.score;
+    game.biggestStreak = state.bestStreak;
+    game.bonusesTriggered = state.bonusesTriggered;
+    state.crowd = Math.min(5000, Math.round(state.hype * 3 + state.dropped * 140));
+    game.crowdSize = state.crowd;
+    game.hype = Math.round(state.hype);
+    game.deadAir = state.deadAir;
+  }
+
+  function dropBooth(booth) {
+    if (booth.dropped) return;
+    booth.dropped = true;
+    state.dropped++;
+    state.crowd += 80 + booth.rank * 40;
+    state.distBonus += booth.payout;
+    burst(booth.x, booth.y, tint, 36, 5);
+    floaty(booth.x, booth.y - 30, '+' + booth.payout, '#ff0');
+  }
+
+  function beginReturn() {
+    if (state.mode === 'done') return;
+    state.mode = 'returning';
   }
 
   function endSet() {
-    if (setEnded) return;
-    setEnded = true;
-    stopMusic();
-    phase = 'RETURN';
-  }
-
-  function finalize() {
-    game.crowdSize = Math.floor((game.bankedHype + game.hype) * 2 + game.biggestStreak * 25 + game.boothsDropped * 80);
+    if (state.mode === 'done') return;
+    state.mode = 'done';
     recomputeScore();
-    game.finalScore = game.score;
-    game.djName = djName || 'DJ';
-    game.avatarName = avatar.name;
-    var s = game.score;
-    game.rank = s > 5000 ? 'S' : s > 3200 ? 'A' : s > 1800 ? 'B' : s > 700 ? 'C' : 'D';
     R.go(game.resultsState);
   }
 
-  // ============================================================
-  //  MINI-GAME
-  // ============================================================
-  function startMini(booth) {
-    mg = {
-      booth: booth, lane: 0, notes: [],
-      spawnT: 0, beatInterval: 60 / booth.bpm,
-      noteSpeed: 230 + booth.idx * 42,
-      misses: 0, hits: 0, spawned: 0,
-      target: 8 + booth.idx * 3,
-      elapsed: 0, targetZone: 1.0
-    };
-    phase = 'RHYTHM';
-    startMusic(booth.bpm, avatar.bpm + booth.idx * 6);
-    addShake(6);
-    burst(cart.x, cart.y, avatar.color, 22, 3);
-  }
-
-  function endMini(cleared) {
-    stopMusic();
-    if (cleared) {
-      mg.booth.dropped = true;
-      game.boothsDropped++;
-      // BANK hype on clear
-      game.bankedHype += game.hype * 0.5;
-      var pay = mg.booth.payout * activeBonusMult();
-      game.bankedHype += pay;
-      game.hype = 0;
-      game.crowdSize += 50 + mg.booth.idx * 30;
-      showFeed('CROWD ERUPTS! +' + Math.round(pay), '#ffff44');
-      addShake(12);
-      burst(cart.x, cart.y, '#ffff44', 60, 6);
-    } else {
-      game.deadAir += 12;
-      game.combo = 0; game.comboMult = 1;
-      showFeed('SCRATCHED OUT!', '#ff4444');
-      addShake(10);
+  // =========================================================
+  //  BONUS TRIGGERS (streak-gated, stackable)
+  // =========================================================
+  function triggerBonuses() {
+    if (state.streak >= 3 && R.pressed('a') && state.bonuses.panel <= 0) {
+      state.bonuses.panel = 6; state.bonusesTriggered++;
+      burst(W / 2, H / 2, '#f0f', 30, 4); floaty(W / 2, H * 0.4, 'FLOOR PANELS!', '#f0f');
     }
-    mg = null;
-    phase = 'RETURN';
-    cart.vx = 0; cart.vy = 0;
-    recomputeScore();
-    checkAllDropped();
-  }
-
-  function checkAllDropped() {
-    var all = true;
-    for (var i = 0; i < booths.length; i++) if (!booths[i].dropped) all = false;
-    if (all) endSet();
-  }
-
-  function registerHit(quality) {
-    var base = quality === 'perfect' ? 30 : 15;
-    base *= loadout.speakerGain * loadout.needleMult;
-    // fader band: closer fader matches "groove zone" -> bonus
-    var faderBoost = 1 + (1 - Math.abs(fader.v - 0.65)) * 0.4;
-    base *= faderBoost;
-    base *= clamp(1 - game.deadAir * 0.03, 0.3, 1);
-    base *= activeBonusMult();
-    game.hype += base;
-    game.combo++;
-    if (game.combo > game.biggestStreak) game.biggestStreak = game.combo;
-    game.comboMult = 1 + Math.floor(game.combo / 4) * 0.5;
-    game.crowdSize += quality === 'perfect' ? 3 : 2;
-    mg.hits++;
-    beep(avatar.bpm * 4 + (quality === 'perfect' ? 200 : 0), 0.06, 'sawtooth');
-  }
-
-  function registerMiss(offbeat) {
-    game.deadAir += offbeat ? 2 : 4;
-    game.combo = 0; game.comboMult = 1;
-    if (!offbeat) mg.misses++;
-    beep(70, 0.1, 'sawtooth');
-  }
-
-  function updateRhythm(dt, f) {
-    mg.elapsed += dt;
-    // tightening on-beat target zone (shrinks toward beat windows)
-    mg.targetZone = Math.max(0.35, 1.0 - mg.elapsed * 0.025);
-
-    // marker lane slide
-    if (R.pressed('ArrowLeft')) mg.lane = 0;
-    if (R.pressed('ArrowRight')) mg.lane = 1;
-
-    // fader control (one working fader): Up/Down nudges, drifts back
-    if (R.keys['ArrowUp']) fader.target = clamp(fader.target + dt * 1.5, 0, 1);
-    if (R.keys['ArrowDown']) fader.target = clamp(fader.target - dt * 1.5, 0, 1);
-    fader.target += (0.5 - fader.target) * dt * 0.3;
-    fader.v += (fader.target - fader.v) * Math.min(1, dt * 8);
-
-    // spawn notes to beat & density
-    var interval = mg.beatInterval / mg.booth.density;
-    mg.spawnT += dt;
-    if (mg.spawnT >= interval && mg.spawned < mg.target) {
-      mg.spawnT -= interval;
-      mg.spawned++;
-      mg.notes.push({ lane: Math.random() < 0.5 ? 0 : 1, y: 40, judged: false });
+    if (state.streak >= 5 && R.pressed('s') && state.bonuses.laser <= 0) {
+      state.bonuses.laser = 6; state.bonusesTriggered++;
+      burst(W / 2, H / 2, '#0ff', 32, 5); floaty(W / 2, H * 0.4, 'LASERS!', '#0ff');
     }
-
-    // current tightened windows (px)
-    var goodW = loadout.needleWindow * mg.targetZone;
-    var perfW = loadout.perfectWindow * mg.targetZone;
-
-    // move notes / detect miss
-    for (var n = mg.notes.length - 1; n >= 0; n--) {
-      var note = mg.notes[n];
-      note.y += mg.noteSpeed * dt;
-      if (!note.judged && note.y > dropLineY + goodW) {
-        note.judged = true;
-        registerMiss(false);
-        if (mg.misses >= 2) { endMini(false); return; }
-      }
-      if (note.y > H + 30) mg.notes.splice(n, 1);
+    if (state.streak >= 7 && R.pressed('d') && state.bonuses.disco <= 0) {
+      state.bonuses.disco = 6; state.bonusesTriggered++;
+      burst(W / 2, H / 2, '#ff0', 34, 5); floaty(W / 2, H * 0.4, 'DISCO BALL!', '#ff0');
     }
-
-    // strike
-    if (R.pressed(' ')) {
-      var best = null, bestD = 1e9;
-      for (var m = 0; m < mg.notes.length; m++) {
-        var nt = mg.notes[m];
-        if (nt.judged || nt.lane !== mg.lane) continue;
-        var d = Math.abs(nt.y - dropLineY);
-        if (d < bestD) { bestD = d; best = nt; }
-      }
-      if (best && bestD <= goodW) {
-        best.judged = true;
-        var q = bestD <= perfW ? 'perfect' : 'good';
-        registerHit(q);
-        burst(laneX[mg.lane], dropLineY, q === 'perfect' ? '#44ffff' : '#88ff44', 18, 4);
-        showFeed(q === 'perfect' ? 'PERFECT' : 'GOOD', q === 'perfect' ? '#44ffff' : '#88ff44');
-      } else {
-        registerMiss(true);
-        showFeed('OFF BEAT', '#ff8844');
-      }
-    }
-
-    // clear condition
-    if (mg.spawned >= mg.target && mg.notes.length === 0) { endMini(true); return; }
-  }
-
-  // ============================================================
-  //  ROAM (momentum physics)
-  // ============================================================
-  function updateRoam(dt) {
-    var ax = 0, ay = 0;
-    if (R.keys['ArrowLeft']) ax -= 1;
-    if (R.keys['ArrowRight']) ax += 1;
-    if (R.keys['ArrowUp']) ay -= 1;
-    if (R.keys['ArrowDown']) ay += 1;
-    var mag = Math.hypot(ax, ay);
-    if (mag > 0) {
-      ax /= mag; ay /= mag;
-      cart.vx += ax * cart.accel * dt;
-      cart.vy += ay * cart.accel * dt;
-      cart.facing = Math.atan2(ay, ax);
-    }
-    // forward vs lateral damping (skid)
-    var sp = Math.hypot(cart.vx, cart.vy);
-    if (sp > 0.001) {
-      var fx = Math.cos(cart.facing), fy = Math.sin(cart.facing);
-      var fwd = cart.vx * fx + cart.vy * fy;
-      var latx = cart.vx - fwd * fx, laty = cart.vy - fwd * fy;
-      fwd *= (1 - cart.dragFwd * dt);
-      latx *= (1 - cart.dragLat * dt);
-      laty *= (1 - cart.dragLat * dt);
-      cart.vx = fwd * fx + latx;
-      cart.vy = fwd * fy + laty;
-    }
-    sp = Math.hypot(cart.vx, cart.vy);
-    if (sp > cart.maxV) { cart.vx *= cart.maxV / sp; cart.vy *= cart.maxV / sp; }
-
-    cart.x += cart.vx * dt;
-    cart.y += cart.vy * dt;
-
-    if (cart.x < cart.r) { cart.x = cart.r; cart.vx *= -0.4; }
-    if (cart.x > W - cart.r) { cart.x = W - cart.r; cart.vx *= -0.4; }
-    if (cart.y < cart.r + 50) { cart.y = cart.r + 50; cart.vy *= -0.4; }
-    if (cart.y > H - cart.r) { cart.y = H - cart.r; cart.vy *= -0.4; }
-
-    // trail
-    if (sp > 120 && Math.random() < 0.5)
-      particles.push({ x: cart.x, y: cart.y, vx: 0, vy: 0, life: 0.3, color: avatar.color, r: 4 });
-
-    // cue at booth
-    for (var i = 0; i < booths.length; i++) {
-      var b = booths[i];
-      if (b.dropped) continue;
-      if (Math.hypot(b.x - cart.x, b.y - cart.y) < 52 && R.pressed(' ')) {
-        cart.vx = 0; cart.vy = 0;
-        startMini(b);
-        return;
-      }
+    if (state.streak >= 9 && R.pressed('f') && state.bonuses.balloon <= 0) {
+      state.bonuses.balloon = 6; state.bonusesTriggered++;
+      burst(W / 2, H / 2, '#f44', 44, 6); floaty(W / 2, H * 0.4, 'BALLOON DROP!', '#f44');
     }
   }
 
-  function updateReturn(dt) {
-    var dx = home.x - cart.x, dy = home.y - cart.y;
-    var d = Math.hypot(dx, dy);
-    if (d < 18) {
-      cart.x = home.x; cart.y = home.y; cart.vx = 0; cart.vy = 0;
-      if (setEnded) { finalize(); return; }
-      phase = 'ROAM';
-      return;
-    }
-    cart.facing = Math.atan2(dy, dx);
-    cart.vx += (dx / d) * cart.accel * dt;
-    cart.vy += (dy / d) * cart.accel * dt;
-    cart.vx *= (1 - cart.dragFwd * dt);
-    cart.vy *= (1 - cart.dragFwd * dt);
-    cart.x += cart.vx * dt;
-    cart.y += cart.vy * dt;
-  }
-
-  // ============================================================
+  // =========================================================
   //  UPDATE
-  // ============================================================
+  // =========================================================
   function update(dt) {
     if (R.current() !== 'GAMEPLAY') return;
-    dt = num(dt, 1 / 60);
     if (dt > 0.1) dt = 0.1;
-    var f = dt * 60;
+    var fr = dt * 60;
 
-    // shake decay
-    if (shake > 0) { shake -= f * 0.7; if (shake < 0) shake = 0; }
-    if (feedTimer > 0) feedTimer -= dt;
+    beatClock += dt;
 
     // particles
-    for (var p = particles.length - 1; p >= 0; p--) {
-      var pt = particles[p];
-      pt.x += pt.vx * f; pt.y += pt.vy * f; pt.vy += 0.15 * f; pt.vx *= 0.96;
-      pt.life -= dt;
-      if (pt.life <= 0) particles.splice(p, 1);
+    for (var i = state.particles.length - 1; i >= 0; i--) {
+      var p = state.particles[i];
+      p.x += p.vx * fr; p.y += p.vy * fr;
+      p.vx *= 0.94; p.vy *= 0.94; p.vy += 0.1 * fr;
+      p.life -= dt;
+      if (p.life <= 0) state.particles.splice(i, 1);
     }
-
-    // -------- pre-game flow --------
-    if (phase === 'AVATAR') {
-      if (R.pressed('ArrowLeft')) selAvatar = (selAvatar + AVATARS.length - 1) % AVATARS.length;
-      if (R.pressed('ArrowRight')) selAvatar = (selAvatar + 1) % AVATARS.length;
-      if (R.pressed(' ') || R.pressed('Enter')) { avatar = AVATARS[selAvatar]; phase = 'NAME'; }
-      return;
+    for (var f = state.floaties.length - 1; f >= 0; f--) {
+      var fl = state.floaties[f];
+      fl.y -= 0.7 * fr; fl.life -= dt * 1.1;
+      if (fl.life <= 0) state.floaties.splice(f, 1);
     }
-    if (phase === 'NAME') {
-      var keys = 'abcdefghijklmnopqrstuvwxyz';
-      for (var ci = 0; ci < keys.length; ci++) {
-        if (R.pressed(keys[ci]) && djName.length < 8) djName += keys[ci].toUpperCase();
-      }
-      if (R.pressed('Backspace') && djName.length) djName = djName.slice(0, -1);
-      if ((R.pressed('Enter') || R.pressed(' ')) && djName.length) phase = 'ROAM';
-      return;
-    }
-
-    // -------- timer / end conditions --------
-    if (!setEnded) {
-      game.timer -= dt;
-      if (game.timer <= 0) { game.timer = 0; endSet(); }
-    }
+    for (var b = 0; b < state.booths.length; b++) state.booths[b].pulse += dt * 4;
 
     // bonus timers
-    for (var b = 0; b < bonuses.length; b++) if (bonuses[b].t > 0) bonuses[b].t -= dt;
-
-    // bonus triggers (stackable, from combo context)
-    for (var bn = 0; bn < bonuses.length; bn++) {
-      var bo = bonuses[bn];
-      if (R.pressed(bo.key) && game.combo >= bo.streak && bo.t <= 0) {
-        bo.t = bo.dur;
-        game.bonusesTriggered++;
-        addShake(8);
-        burst(W / 2, H / 2, bo.color, 40, 5);
-        showFeed(bo.name + ' BONUS!', bo.color);
+    var bk = ['panel', 'laser', 'disco', 'balloon'];
+    for (var k = 0; k < bk.length; k++) {
+      if (state.bonuses[bk[k]] > 0) {
+        state.bonuses[bk[k]] -= dt;
+        if (state.bonuses[bk[k]] < 0) state.bonuses[bk[k]] = 0;
       }
     }
 
-    tickMusic(dt);
+    // timer (stops once returning/done)
+    if (state.mode !== 'returning' && state.mode !== 'done') {
+      state.timer -= dt;
+      if (state.timer <= 0) { state.timer = 0; beginReturn(); }
+    }
+    if (state.cueHint > 0) state.cueHint -= dt;
 
-    if (phase === 'ROAM') updateRoam(dt);
-    else if (phase === 'RHYTHM') updateRhythm(dt, f);
-    else if (phase === 'RETURN') updateReturn(dt);
+    if (state.mode === 'roam') updateRoam(fr, dt);
+    else if (state.mode === 'rhythm') updateRhythm(dt, fr);
+    else if (state.mode === 'returning') updateReturn(fr);
 
     recomputeScore();
   }
 
-  // ============================================================
-  //  DRAW
-  // ============================================================
-  function neonRect(x, y, w, h, r, fill, stroke) {
-    var ctx = R.ctx;
-    ctx.save();
-    ctx.fillStyle = fill;
-    R.roundRect(x, y, w, h, r); ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = stroke;
-    R.roundRect(x, y, w, h, r); ctx.stroke();
-    ctx.restore();
-  }
+  // ---- ROAM: momentum cart physics ----
+  function updateRoam(fr, dt) {
+    var c = state.cart;
+    var ACCEL = 0.55;
+    if (R.keys['ArrowLeft']) c.vx -= ACCEL * fr;
+    if (R.keys['ArrowRight']) c.vx += ACCEL * fr;
+    if (R.keys['ArrowUp']) c.vy -= ACCEL * fr;
+    if (R.keys['ArrowDown']) c.vy += ACCEL * fr;
 
-  function drawParticles() {
-    var ctx = R.ctx;
-    for (var i = 0; i < particles.length; i++) {
-      var p = particles[i];
-      ctx.save();
-      ctx.globalAlpha = clamp(p.life * 1.5, 0, 1);
-      ctx.fillStyle = p.color;
-      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
+    // forward (vy) damps faster; lateral skid (vx) damps slower
+    c.vy *= Math.pow(0.93, fr);
+    c.vx *= Math.pow(0.965, fr);
+
+    var maxv = 7.5;
+    var sp = Math.hypot(c.vx, c.vy);
+    if (sp > maxv) { c.vx *= maxv / sp; c.vy *= maxv / sp; }
+
+    c.x += c.vx * fr;
+    c.y += c.vy * fr;
+
+    if (c.x < 20) { c.x = 20; c.vx = Math.abs(c.vx) * 0.4; }
+    if (c.x > W - 20) { c.x = W - 20; c.vx = -Math.abs(c.vx) * 0.4; }
+    if (c.y < 24) { c.y = 24; c.vy = Math.abs(c.vy) * 0.4; }
+    if (c.y > H - 24) { c.y = H - 24; c.vy = -Math.abs(c.vy) * 0.4; }
+
+    // drift trail juice
+    if (sp > 2.4 && Math.random() < 0.4) burst(c.x, c.y + 8, tint, 1, 1);
+
+    // cue record at near booth
+    var near = null;
+    for (var i = 0; i < state.booths.length; i++) {
+      var bt = state.booths[i];
+      if (bt.dropped) continue;
+      if (Math.hypot(c.x - bt.x, c.y - bt.y) < bt.r + 22) { near = bt; break; }
+    }
+    if (near) {
+      state.cueHint = 0.2;
+      if (R.pressed(' ') || R.pressed('Enter')) startRhythm(near);
     }
   }
 
-  function drawAvatarSelect() {
-    var ctx = R.ctx;
-    ctx.fillStyle = '#0a0014'; ctx.fillRect(0, 0, W, H);
-    R.text('PICK YOUR DJ', W / 2, 60, 'bold 30px monospace', '#ff44dd', 'center');
-    R.text('< LEFT / RIGHT >   SPACE to confirm', W / 2, 95, '13px monospace', '#aaa', 'center');
-    var n = AVATARS.length, cardW = 120, gap = 24;
-    var total = n * cardW + (n - 1) * gap;
-    var startX = (W - total) / 2;
-    for (var i = 0; i < n; i++) {
-      var a = AVATARS[i];
-      var x = startX + i * (cardW + gap), y = H / 2 - 70;
-      var sel = i === selAvatar;
-      neonRect(x, y, cardW, 150, 10, sel ? '#22113a' : '#120824', sel ? a.color : '#443366');
-      ctx.save();
-      ctx.fillStyle = a.color;
-      ctx.beginPath(); ctx.arc(x + cardW / 2, y + 50, 26, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
-      R.text(a.name, x + cardW / 2, y + 95, 'bold 16px monospace', sel ? a.color : '#ccc', 'center');
-      R.text(a.desc, x + cardW / 2, y + 115, '10px monospace', '#999', 'center');
-      R.text(a.bpm + ' BPM', x + cardW / 2, y + 133, '10px monospace', '#888', 'center');
+  // ---- RETURNING home ----
+  function updateReturn(fr) {
+    var c = state.cart;
+    var dx = state.home.x - c.x, dy = state.home.y - c.y;
+    var d = Math.hypot(dx, dy);
+    if (d < 10) { endSet(); return; }
+    c.vx += (dx / d) * 0.55 * fr;
+    c.vy += (dy / d) * 0.55 * fr;
+    c.vx *= 0.9; c.vy *= 0.9;
+    c.x += c.vx * fr; c.y += c.vy * fr;
+  }
+
+  // ---- RHYTHM mini-game ----
+  function updateRhythm(dt, fr) {
+    if (!rhythm) { state.mode = 'roam'; return; }
+    triggerBonuses();
+
+    // groove marker slide
+    if (R.pressed('ArrowLeft')) rhythm.lane = 0;
+    if (R.pressed('ArrowRight')) rhythm.lane = 1;
+    var tx = laneX(rhythm.lane);
+    rhythm.markerX += (tx - rhythm.markerX) * Math.min(1, 0.35 * fr);
+
+    if (rhythm.resultTimer > 0) rhythm.resultTimer -= dt;
+
+    // whiff/cleared hold
+    if (rhythm.whiffed) {
+      rhythm.endHold -= dt;
+      if (rhythm.endHold <= 0) endRhythm();
+      return;
+    }
+    if (rhythm.done) {
+      rhythm.endHold -= dt;
+      if (rhythm.endHold <= 0) endRhythm();
+      return;
+    }
+
+    // spawn notes on the beat
+    if (rhythm.spawned < rhythm.total) {
+      rhythm.spawnTimer -= dt;
+      if (rhythm.spawnTimer <= 0) {
+        rhythm.spawnTimer = rhythm.interval;
+        rhythm.notes.push({ lane: Math.random() < 0.5 ? 0 : 1, y: -20, hit: false });
+        rhythm.spawned++;
+      }
+    }
+
+    var spd = rhythm.noteSpeed * fr;
+    var struck = R.pressed(' ') || R.pressed('Enter') || R.pressed('ArrowUp');
+
+    // move notes & detect overrun misses
+    for (var i = rhythm.notes.length - 1; i >= 0; i--) {
+      var n = rhythm.notes[i];
+      if (!n.hit) {
+        n.y += spd;
+        if (n.y > DROP_LINE + 48) {
+          n.hit = true;
+          registerMiss();
+        }
+      }
+    }
+
+    // strike: nearest unhit note in marker lane within window
+    if (struck) {
+      var best = null, bestD = 99999;
+      for (var j = 0; j < rhythm.notes.length; j++) {
+        var nt = rhythm.notes[j];
+        if (nt.hit || nt.lane !== rhythm.lane) continue;
+        var d = Math.abs(nt.y - DROP_LINE);
+        if (d < bestD) { bestD = d; best = nt; }
+      }
+      var perfWin = 14 * ld.needleWindowMul;
+      var goodWin = 34 * ld.needleWindowMul;
+
+      if (!best || bestD > goodWin + 24) {
+        // off-beat press -> dead air
+        state.deadAir += 1;
+        state.combo = 0; state.streak = 0; state.multiplier = 1;
+        rhythm.result = 'OFF-BEAT'; rhythm.resultCol = '#888'; rhythm.resultTimer = 0.5;
+      } else if (bestD > goodWin) {
+        best.hit = true;
+        registerMiss();
+      } else {
+        best.hit = true;
+        var col, label, base;
+        if (bestD <= perfWin) { label = 'PERFECT'; col = tint; base = 100; }
+        else { label = 'GOOD'; col = '#0f0'; base = 55; }
+
+        state.combo++; state.streak++;
+        if (state.streak > state.bestStreak) state.bestStreak = state.streak;
+        state.multiplier = Math.min(8, 1 + Math.floor(state.combo / 5) * 0.5);
+
+        var deadPenalty = Math.max(0.4, 1 - state.deadAir * 0.03);
+        var gain = base * ld.speakerScale * ld.needleMult * state.multiplier * deadPenalty;
+        state.hype += gain;
+        rhythm.cleared++;
+
+        burst(laneX(best.lane), DROP_LINE, col, 14, 4);
+        floaty(laneX(best.lane), DROP_LINE - 24, label, col);
+        rhythm.result = label; rhythm.resultCol = col; rhythm.resultTimer = 0.4;
+      }
+    }
+
+    // remove fully-resolved off-screen notes
+    rhythm.notes = rhythm.notes.filter(function (nn) {
+      return !(nn.hit && nn.y > DROP_LINE + 60);
+    });
+
+    // booth cleared when all notes spawned & resolved
+    if (rhythm.spawned >= rhythm.total && rhythm.notes.length === 0 && !rhythm.done) {
+      rhythm.done = true;
+      rhythm.endHold = 1.1;
+      rhythm.result = 'CROWD GOES WILD!';
+      rhythm.resultCol = '#ff0';
+      rhythm.resultTimer = 1.1;
+      dropBooth(rhythm.booth);
     }
   }
 
-  function drawNameEntry() {
-    var ctx = R.ctx;
-    ctx.fillStyle = '#0a0014'; ctx.fillRect(0, 0, W, H);
-    R.text('NAME YOUR DJ', W / 2, H / 2 - 80, 'bold 28px monospace', avatar.color, 'center');
-    R.text('TYPE A-Z   BACKSPACE   ENTER', W / 2, H / 2 - 48, '12px monospace', '#aaa', 'center');
-    neonRect(W / 2 - 130, H / 2 - 20, 260, 50, 8, '#120824', avatar.color);
-    var caret = (Math.floor(Date.now() / 400) % 2) ? '_' : ' ';
-    R.text((djName || '') + caret, W / 2, H / 2 + 12, 'bold 24px monospace', '#fff', 'center');
+  function registerMiss() {
+    if (!rhythm) return;
+    rhythm.misses++;
+    state.combo = 0; state.streak = 0; state.multiplier = 1;
+    state.deadAir += 1;
+    rhythm.result = 'MISS'; rhythm.resultCol = '#f44'; rhythm.resultTimer = 0.5;
+    if (rhythm.misses >= 2 && !rhythm.done) {
+      rhythm.whiffed = true;
+      rhythm.endHold = 1.2;
+      rhythm.result = 'WHIFF! SCRATCHED';
+      rhythm.resultCol = '#f44';
+      rhythm.resultTimer = 1.2;
+    }
   }
 
-  function drawFloor() {
-    var ctx = R.ctx;
-    ctx.save();
-    if (shake > 0) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
-
-    ctx.fillStyle = '#0a0018'; ctx.fillRect(0, 0, W, H);
-    // grid floor
-    ctx.strokeStyle = 'rgba(80,40,120,0.3)'; ctx.lineWidth = 1;
-    for (var gx = 0; gx < W; gx += 50) { ctx.beginPath(); ctx.moveTo(gx, 50); ctx.lineTo(gx, H); ctx.stroke(); }
-    for (var gy = 50; gy < H; gy += 50) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke(); }
-
-    // home booth
-    neonRect(home.x - 26, home.y - 20, 52, 40, 8, '#223', '#66f');
-    R.text('HOME', home.x, home.y + 4, '10px monospace', '#9af', 'center');
-
-    // booths
-    for (var i = 0; i < booths.length; i++) {
-      var b = booths[i];
-      var pulse = 0.5 + 0.5 * Math.sin(Date.now() / 300 + i);
-      var col = b.dropped ? '#2a6' : avatar.color;
-      ctx.save();
-      ctx.globalAlpha = b.dropped ? 0.6 : (0.7 + pulse * 0.3);
-      neonRect(b.x - 24, b.y - 24, 48, 48, 8, b.dropped ? '#143' : '#301a40', col);
-      ctx.restore();
-      R.text((i + 1) + (b.dropped ? ' OK' : ''), b.x, b.y - 4, 'bold 13px monospace', '#fff', 'center');
-      R.text(b.bpm + 'bpm', b.x, b.y + 14, '9px monospace', '#fdd', 'center');
-    }
-
-    // cart
-    ctx.save();
-    ctx.translate(cart.x, cart.y);
-    ctx.rotate(cart.facing + Math.PI / 2);
-    ctx.fillStyle = avatar.color;
-    R.roundRect(-16, -12, 32, 24, 5); ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.beginPath(); ctx.arc(-7, 0, 4, 0, Math.PI * 2); ctx.arc(7, 0, 4, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-
-    drawParticles();
-    ctx.restore();
-  }
-
-  function drawMini() {
-    var ctx = R.ctx;
-    ctx.save();
-    if (shake > 0) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
-
-    ctx.fillStyle = '#08001a'; ctx.fillRect(0, 0, W, H);
-    var beatPulse = music.on ? (1 - music.t / (60 / music.bpm)) : 0;
-
-    // lanes
-    for (var l = 0; l < 2; l++) {
-      ctx.save();
-      ctx.globalAlpha = 0.18 + (mg.lane === l ? 0.18 : 0);
-      ctx.fillStyle = avatar.color;
-      ctx.fillRect(laneX[l] - 45, 40, 90, H - 40);
-      ctx.restore();
-    }
-
-    // tightening target zone around drop line
-    var zoneH = loadout.needleWindow * mg.targetZone * 2;
-    ctx.save();
-    ctx.globalAlpha = 0.25 + beatPulse * 0.3;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(laneX[mg.lane] - 48, dropLineY - zoneH / 2, 96, zoneH);
-    ctx.restore();
-
-    // drop line
-    ctx.strokeStyle = '#ff44dd'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(laneX[0] - 48, dropLineY); ctx.lineTo(laneX[1] + 48, dropLineY); ctx.stroke();
-
-    // notes
-    for (var n = 0; n < mg.notes.length; n++) {
-      var note = mg.notes[n];
-      if (note.judged) continue;
-      ctx.save();
-      ctx.fillStyle = note.lane === mg.lane ? '#44ffff' : '#88ff44';
-      R.roundRect(laneX[note.lane] - 30, note.y - 12, 60, 24, 6); ctx.fill();
-      ctx.restore();
-    }
-
-    // groove marker
-    ctx.save();
-    ctx.fillStyle = '#ffffff';
-    R.roundRect(laneX[mg.lane] - 36, dropLineY - 6, 72, 12, 4); ctx.fill();
-    ctx.restore();
-
-    // mixer / fader (one working channel)
-    var fx = 30, fy = H / 2 - 60, fh = 120;
-    ctx.strokeStyle = '#555'; ctx.lineWidth = 2;
-    ctx.strokeRect(fx, fy, 16, fh);
-    ctx.fillStyle = (Math.abs(fader.v - 0.65) < 0.2) ? '#22ff88' : '#ff8844';
-    ctx.fillRect(fx, fy + (1 - fader.v) * fh - 4, 16, 8);
-    R.text('FADER', fx + 8, fy - 8, '9px monospace', '#aaa', 'center');
-    R.text('UP/DN', fx + 8, fy + fh + 14, '8px monospace', '#888', 'center');
-
-    drawParticles();
-
-    R.text(avatar.name + ' MIX  ' + mg.booth.bpm + ' BPM', W / 2, 28, 'bold 16px monospace', avatar.color, 'center');
-    R.text('LEFT/RIGHT slide  SPACE strike  |  misses ' + mg.misses + '/2', W / 2, H - 26, '12px monospace', '#ccc', 'center');
-    R.text('hits ' + mg.hits + '/' + mg.target, W / 2, H - 48, '11px monospace', '#9f9', 'center');
-
-    ctx.restore();
-  }
-
-  function drawHUD() {
-    var ctx = R.ctx;
-    ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, 0, W, 48);
-    var t = Math.max(0, game.timer);
-    var mm = Math.floor(t / 60), ss = Math.floor(t % 60);
-    R.text((mm) + ':' + (ss < 10 ? '0' : '') + ss, 14, 30, 'bold 20px monospace', t < 20 ? '#f44' : '#fff', 'left');
-    R.text('SCORE ' + game.score, W / 2, 22, 'bold 16px monospace', '#fff', 'center');
-    R.text('HYPE ' + Math.round(game.bankedHype + game.hype) + '  x' + game.comboMult.toFixed(1), W / 2, 40, '11px monospace', '#ff8', 'center');
-    R.text('COMBO ' + game.combo, W - 14, 18, 'bold 14px monospace', '#4ff', 'right');
-    R.text('BOOTHS ' + game.boothsDropped + '/5', W - 14, 36, '11px monospace', '#9f9', 'right');
-
-    // active bonuses
-    var bx = 14, by = 58;
-    for (var i = 0; i < bonuses.length; i++) {
-      var bo = bonuses[i];
-      var active = bo.t > 0;
-      ctx.save();
-      ctx.globalAlpha = active ? 1 : 0.35;
-      ctx.fillStyle = active ? bo.color : '#333';
-      R.roundRect(bx, by, 64, 18, 4); ctx.fill();
-      ctx.restore();
-      R.text(bo.name + ' [' + bo.key.toUpperCase() + ']', bx + 32, by + 13, '8px monospace', active ? '#000' : '#888', 'center');
-      bx += 70;
-    }
-
-    if (feedTimer > 0 && feedText) {
-      ctx.save();
-      ctx.globalAlpha = clamp(feedTimer * 2, 0, 1);
-      R.text(feedText, W / 2, H / 2 - 60, 'bold 28px monospace', feedColor, 'center');
-      ctx.restore();
-    }
-    ctx.restore();
+  // =========================================================
+  //  RENDER
+  // =========================================================
+  function fmtTime(t) {
+    var m = Math.floor(t / 60), s = Math.floor(t % 60);
+    return m + ':' + (s < 10 ? '0' + s : s);
   }
 
   function draw() {
-    if (phase === 'AVATAR') { drawAvatarSelect(); return; }
-    if (phase === 'NAME') { drawNameEntry(); return; }
-    if (phase === 'RHYTHM') drawMini();
-    else drawFloor();
-    drawHUD();
+    if (R.current() !== 'GAMEPLAY') return;
+    var ctx = R.ctx;
+    var beat = (Math.sin(beatClock * 6) * 0.5 + 0.5);
+
+    // floor
+    ctx.fillStyle = '#0a0612';
+    ctx.fillRect(0, 0, W, H);
+
+    // neon grid floor
+    ctx.strokeStyle = 'rgba(' + (state.bonuses.laser > 0 ? '0,255,255' : '80,40,120') + ',0.25)';
+    ctx.lineWidth = 1;
+    for (var gx = 0; gx <= W; gx += 40) {
+      ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+    }
+    for (var gy = 0; gy <= H; gy += 40) {
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+    }
+
+    // dance-floor disco flashes
+    if (state.bonuses.disco > 0 || state.bonuses.panel > 0) {
+      ctx.globalAlpha = 0.08 + beat * 0.06;
+      ctx.fillStyle = state.bonuses.disco > 0 ? '#ff0' : '#f0f';
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = 1;
+    }
+
+    if (state.mode === 'roam' || state.mode === 'returning') {
+      drawFloorScene(ctx, beat);
+    } else if (state.mode === 'rhythm') {
+      drawRhythm(ctx, beat);
+    }
+
+    drawParticles(ctx);
+    drawFloaties(ctx);
+    drawHUD(ctx);
   }
 
-  return { update: update, draw: draw };
+  function drawFloorScene(ctx, beat) {
+    // home booth
+    ctx.fillStyle = '#221033';
+    R.roundRect(state.home.x - 26, state.home.y - 18, 52, 32, 6);
+    ctx.fill();
+    R.text('HOME', state.home.x, state.home.y - 26, '10px monospace', '#aaa', 'center');
+
+    // booths
+    for (var i = 0; i < state.booths.length; i++) {
+      var b = state.booths[i];
+      var pulse = Math.sin(b.pulse) * 0.5 + 0.5;
+      if (b.dropped) {
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = '#2a2a2a';
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+        R.text('\u2713', b.x, b.y + 5, 'bold 18px monospace', '#0f0', 'center');
+      } else {
+        ctx.shadowBlur = 12 + pulse * 10;
+        ctx.shadowColor = tint;
+        ctx.fillStyle = 'rgba(0,255,255,' + (0.25 + pulse * 0.3) + ')';
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = tint; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.stroke();
+        R.text((b.rank + 1) + '', b.x, b.y + 5, 'bold 15px monospace', '#fff', 'center');
+        R.text(b.bpm + 'BPM', b.x, b.y + b.r + 12, '9px monospace', '#0aa', 'center');
+      }
+    }
+
+    // cart (deck-cart)
+    var c = state.cart;
+    var sp = Math.hypot(c.vx, c.vy);
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    if (sp > 0.1) ctx.rotate(Math.atan2(c.vy, c.vx) * 0.15);
+    ctx.shadowBlur = 8; ctx.shadowColor = tint;
+    ctx.fillStyle = '#15101f';
+    R.roundRect(-18, -12, 36, 24, 5); ctx.fill();
+    ctx.shadowBlur = 0;
+    // turntables
+    ctx.fillStyle = tint;
+    ctx.beginPath(); ctx.arc(-8, 0, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(8, 0, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(-8, 0, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(8, 0, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    if (state.cueHint > 0 && state.mode === 'roam') {
+      R.text('[SPACE] CUE RECORD', c.x, c.y - 24, 'bold 11px monospace', '#ff0', 'center');
+    }
+    if (state.mode === 'returning') {
+      R.text('SET OVER - ROLLING HOME...', W / 2, 40, 'bold 14px monospace', '#ff0', 'center');
+    }
+  }
+
+  function drawRhythm(ctx, beat) {
+    var bt = state.activeBooth;
+    var laneW = 90;
+    var cx = W * 0.5;
+
+    // lane backdrop
+    ctx.fillStyle = 'rgba(20,10,35,0.85)';
+    ctx.fillRect(cx - laneW - 30, 60, (laneW + 30) * 2, H - 120);
+
+    for (var l = 0; l < 2; l++) {
+      var lx = laneX(l);
+      ctx.fillStyle = (rhythm.lane === l) ? 'rgba(0,255,255,0.10)' : 'rgba(255,255,255,0.03)';
+      ctx.fillRect(lx - 36, 60, 72, H - 120);
+      ctx.strokeStyle = 'rgba(120,120,160,0.3)'; ctx.lineWidth = 1;
+      ctx.strokeRect(lx - 36, 60, 72, H - 120);
+    }
+
+    // tightening on-beat target zone (pulses with beat)
+    var zone = 20 + beat * 18;
+    ctx.strokeStyle = 'rgba(255,255,0,' + (0.4 + beat * 0.4) + ')';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - laneW - 30, DROP_LINE - zone); ctx.lineTo(cx + laneW + 30, DROP_LINE - zone);
+    ctx.moveTo(cx - laneW - 30, DROP_LINE + zone); ctx.lineTo(cx + laneW + 30, DROP_LINE + zone);
+    ctx.stroke();
+
+    // glowing drop-line
+    ctx.shadowBlur = 14; ctx.shadowColor = tint;
+    ctx.strokeStyle = tint; ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx - laneW - 30, DROP_LINE); ctx.lineTo(cx + laneW + 30, DROP_LINE);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // notes
+    for (var i = 0; i < rhythm.notes.length; i++) {
+      var n = rhythm.notes[i];
+      if (n.hit) continue;
+      var nx = laneX(n.lane);
+      ctx.shadowBlur = 8; ctx.shadowColor = '#f0f';
+      ctx.fillStyle = n.lane === rhythm.lane ? '#f0f' : '#a4a';
+      R.roundRect(nx - 24, n.y - 8, 48, 16, 4); ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // groove marker
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.moveTo(rhythm.markerX, DROP_LINE - 16);
+    ctx.lineTo(rhythm.markerX - 10, DROP_LINE - 30);
+    ctx.lineTo(rhythm.markerX + 10, DROP_LINE - 30);
+    ctx.closePath(); ctx.fill();
+
+    // booth / track info
+    R.text('BOOTH ' + (bt.rank + 1) + '  -  ' + bt.bpm + ' BPM', W / 2, 44, 'bold 13px monospace', tint, 'center');
+    R.text('\u266A ' + game.dj.avatar.track, W / 2, 76, '10px monospace', '#0aa', 'center');
+    R.text('NOTES ' + rhythm.cleared + '/' + rhythm.total + '   MISSES ' + rhythm.misses + '/2',
+      W / 2, H - 36, '11px monospace', '#ccc', 'center');
+
+    // result flash
+    if (rhythm.resultTimer > 0) {
+      R.text(rhythm.result, W / 2, H * 0.5, 'bold 22px monospace', rhythm.resultCol, 'center');
+    }
+
+    R.text('\u2190\u2192 LANE   [SPACE] STRIKE   A/S/D/F BONUS', W / 2, H - 16, '9px monospace', '#777', 'center');
+  }
+
+  function drawParticles(ctx) {
+    for (var i = 0; i < state.particles.length; i++) {
+      var p = state.particles[i];
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawFloaties(ctx) {
+    for (var i = 0; i < state.floaties.length; i++) {
+      var fl = state.floaties[i];
+      ctx.globalAlpha = Math.max(0, fl.life);
+      R.text(fl.text, fl.x, fl.y, 'bold 13px monospace', fl.color, 'center');
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawHUD(ctx) {
+    // top bar
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, 26);
+
+    R.text(game.dj.name, 8, 17, 'bold 12px monospace', tint, 'left');
+    var tcol = state.timer < 20 ? '#f44' : '#fff';
+    R.text('\u23F1 ' + fmtTime(state.timer), W / 2, 17, 'bold 14px monospace', tcol, 'center');
+    R.text('SCORE ' + state.score, W - 8, 17, 'bold 12px monospace', '#ff0', 'right');
+
+    // hype / dead-air / combo bar (second row)
+    R.text('HYPE ' + Math.round(state.hype), 8, H - 8, '11px monospace', '#0f0', 'left');
+    R.text('DEAD AIR ' + state.deadAir, W / 2, H - 8, '11px monospace', '#f44', 'center');
+    if (state.mode !== 'rhythm') {
+      R.text('BOOTHS ' + state.dropped + '/5   x' + state.multiplier.toFixed(1),
+        W - 8, H - 8, '11px monospace', '#0ff', 'right');
+    }
+
+    // streak badge
+    if (state.streak > 1) {
+      R.text(state.streak + ' STREAK  x' + state.multiplier.toFixed(1),
+        W / 2, 50, 'bold 12px monospace', '#ff0', 'center');
+    }
+
+    // active bonuses
+    var labels = { panel: 'PANELS', laser: 'LASERS', disco: 'DISCO', balloon: 'BALLOONS' };
+    var bx = 8, k = ['panel', 'laser', 'disco', 'balloon'];
+    for (var i = 0; i < k.length; i++) {
+      if (state.bonuses[k[i]] > 0) {
+        R.text('+' + labels[k[i]], bx, 40, '9px monospace', '#f0f', 'left');
+        bx += 70;
+      }
+    }
+  }
+
+  // =========================================================
+  //  REGISTER
+  // =========================================================
+  this.update = update;
+  this.draw = draw;
+  return this;
 };
 })();
