@@ -9,18 +9,18 @@ window.GAME_CONFIG = {
   },
   "first": "MENU",
   "labels": {
-    "characterPrompt": "Pick your DJ and enter a stage name",
-    "locationPrompt": "Choose a club to perform",
-    "locationCta": "Spin",
-    "action": "Drop the Beat",
-    "finish": "End Set",
-    "count": "Streak",
-    "results": "Set Resolved",
-    "unit": "hits",
-    "item": "beat-note",
+    "characterPrompt": "Pick your DJ and enter a stage name for the marq",
+    "locationPrompt": "Choose a club to perform at",
+    "locationCta": "Perform",
+    "action": "Cue Record (SPACE)",
+    "finish": "Set Complete",
+    "count": "Combo",
+    "results": "Results",
+    "unit": "Hype",
+    "item": "Beat-Note",
     "playAgain": "Spin Again",
-    "home": "DJ Booth",
-    "miniGame": "Dancefloor Bonus",
+    "home": "Menu",
+    "miniGame": "Track Drop",
     "tiers": [
       "",
       "Local Spinner",
@@ -92,15 +92,26 @@ window.GAME_CONFIG = {
         "name": "Open-Mic Lounge",
         "diff": "1",
         "mix": [
-          2,
+          3,
           2,
           1,
           1,
-          1
+          0
         ]
       },
       {
         "name": "Neon Underground",
+        "diff": "2",
+        "mix": [
+          2,
+          3,
+          2,
+          1,
+          0
+        ]
+      },
+      {
+        "name": "Laser Palace",
         "diff": "2",
         "mix": [
           1,
@@ -111,58 +122,47 @@ window.GAME_CONFIG = {
         ]
       },
       {
-        "name": "Skyline Club",
+        "name": "Skyline Megaclub",
         "diff": "3",
         "mix": [
           1,
           2,
-          3,
-          3,
-          2
-        ]
-      },
-      {
-        "name": "Legendary Megadome",
-        "diff": "4",
-        "mix": [
-          1,
           2,
           3,
-          3,
-          3
+          2
         ]
       }
     ],
     "gear": [
       {
         "label": "Deck",
-        "name": "Battered Dual Deck"
+        "name": "Battered Dual Turntable"
       },
       {
         "label": "Mixer",
-        "name": "2-Channel One-Fader Mixe"
+        "name": "2-Channel Mixer"
       },
       {
         "label": "Needle",
         "name": "Bronze Needle"
       },
       {
-        "label": "Rig",
+        "label": "Speaker",
         "name": "60-Watt Stack"
       }
     ],
     "itemTypes": [
       {
-        "type": "colored floor panels"
+        "type": "Left-Lane Note"
       },
       {
-        "type": "laser beams"
+        "type": "Right-Lane Note"
       },
       {
-        "type": "disco ball"
+        "type": "Perfect Beat"
       },
       {
-        "type": "balloon drop"
+        "type": "Off-Beat Note"
       }
     ]
   },
