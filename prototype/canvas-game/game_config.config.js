@@ -9,16 +9,16 @@ window.GAME_CONFIG = {
   },
   "first": "MENU",
   "labels": {
-    "characterPrompt": "Pick your DJ and enter your stage name",
+    "characterPrompt": "Pick your DJ and enter a stage name",
     "locationPrompt": "Choose your nightclub",
     "locationCta": "Confirm Venue",
     "action": "Drop the Track",
-    "finish": "Roll to Home Booth",
+    "finish": "Roll back to home booth",
     "count": "Booths Dropped",
     "results": "Set Results",
     "unit": "booths",
-    "item": "Gear",
-    "playAgain": "Spin Again",
+    "item": "booth",
+    "playAgain": "Play Again",
     "home": "Menu",
     "miniGame": "Track-Drop Rhythm",
     "tiers": [
@@ -60,47 +60,47 @@ window.GAME_CONFIG = {
     ],
     "locations": [
       {
-        "name": "Neon Underground",
+        "name": "Mellow Lounge",
         "diff": "1",
         "mix": [
-          2,
+          3,
           1,
           1,
-          1,
+          0,
           0
         ]
       },
       {
-        "name": "Funk Palace",
+        "name": "Neon Club",
         "diff": "2",
         "mix": [
-          1,
+          2,
           2,
           1,
-          1,
+          0,
           0
         ]
       },
       {
-        "name": "Laser Loft",
+        "name": "Laser Arena",
         "diff": "3",
         "mix": [
           1,
           1,
+          2,
           1,
-          1,
-          1
+          0
         ]
       },
       {
-        "name": "Mirrorball Megaclub",
+        "name": "Megadome Rave",
         "diff": "4",
         "mix": [
           0,
           1,
           1,
-          1,
-          2
+          2,
+          1
         ]
       }
     ],
@@ -110,12 +110,12 @@ window.GAME_CONFIG = {
         "name": "Battered Dual Turntable"
       },
       {
-        "label": "Mixer",
-        "name": "2-Channel Mixer"
-      },
-      {
         "label": "Needle",
         "name": "Bronze Needle"
+      },
+      {
+        "label": "Mixer",
+        "name": "2-Channel Mixer"
       },
       {
         "label": "Speaker Rig",
