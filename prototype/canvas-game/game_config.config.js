@@ -9,18 +9,18 @@ window.GAME_CONFIG = {
   },
   "first": "MENU",
   "labels": {
-    "characterPrompt": "Pick your DJ and enter a stage name",
+    "characterPrompt": "Pick your DJ and enter your stage name",
     "locationPrompt": "Choose your nightclub",
-    "locationCta": "Confirm Venue",
-    "action": "Drop the Track",
+    "locationCta": "Choose Gear",
+    "action": "Cue the record",
     "finish": "Roll back to home booth",
     "count": "Booths Dropped",
     "results": "Set Results",
     "unit": "booths",
-    "item": "booth",
+    "item": "gear",
     "playAgain": "Play Again",
     "home": "Menu",
-    "miniGame": "Track-Drop Rhythm",
+    "miniGame": "Track Drop",
     "tiers": [
       "",
       "Bronze Spinner",
@@ -82,7 +82,7 @@ window.GAME_CONFIG = {
         ]
       },
       {
-        "name": "Laser Arena",
+        "name": "Laser Warehouse",
         "diff": "3",
         "mix": [
           1,
@@ -93,7 +93,7 @@ window.GAME_CONFIG = {
         ]
       },
       {
-        "name": "Megadome Rave",
+        "name": "Megabeat Arena",
         "diff": "4",
         "mix": [
           0,
@@ -110,12 +110,12 @@ window.GAME_CONFIG = {
         "name": "Battered Dual Turntable"
       },
       {
-        "label": "Needle",
-        "name": "Bronze Needle"
-      },
-      {
         "label": "Mixer",
         "name": "2-Channel Mixer"
+      },
+      {
+        "label": "Needle",
+        "name": "Bronze Needle"
       },
       {
         "label": "Speaker Rig",

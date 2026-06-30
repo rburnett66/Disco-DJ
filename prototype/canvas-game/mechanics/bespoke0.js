@@ -1,586 +1,787 @@
 (function(){'use strict';var R=window.MMKit.runtime;window.MMKit=window.MMKit||{};window.MMKit.mechanics=window.MMKit.mechanics||{};
 MMKit.mechanics.NeonPlay = function (config, game) {
+  config = config || {};
+  game = game || {};
+
   var W = R.W, H = R.H;
 
   // ---------- helpers ----------
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+  function rnd(a, b) { return a + Math.random() * (b - a); }
+  function dist2(a, b) { var dx = a.x - b.x, dy = a.y - b.y; return dx * dx + dy * dy; }
 
-  // ---------- persistent save / loadout ----------
-  // Weakest starting loadout (battered deck, 2-channel mixer one fader,
-  // Bronze Needle = narrow windows + low mult, 60-watt speaker = small hype gain).
-  game.save = game.save || {
-    loadout: {
-      needle: { name: 'Bronze Needle', perfWin: 0.05, goodWin: 0.11, mult: 1.0 },
-      speaker: { name: '60-Watt Stack', hypeGain: 1.0 },
-      mixer: { name: '2-Channel Mixer', faders: 1 }
-    }
-  };
-  var loadout = game.save.loadout;
-
-  // ---------- avatars + per-avatar music tracks ----------
+  // ---------- avatars (each with its own music track) ----------
   var AVATARS = [
-    { key: 'spr_dj_neon',  name: 'NOVA',  track: { name: 'Pulse Drive',  baseBPM: 92,  scale: [0, 3, 5, 7, 10], col: '#0ff' } },
-    { key: 'spr_dj_vapor', name: 'VAPR',  track: { name: 'Velvet Synth', baseBPM: 104, scale: [0, 2, 4, 7, 9],  col: '#f0f' } },
-    { key: 'spr_dj_bass',  name: 'QUAKE', track: { name: 'Sub Bass War', baseBPM: 120, scale: [0, 2, 3, 7, 8],  col: '#0f8' } }
+    { name: 'PULSE',  col: '#0ff', track: 'synthwave', bpmBase: 80, glow: '#0ff' },
+    { name: 'VOLT',   col: '#f0f', track: 'electro',   bpmBase: 90, glow: '#f0f' },
+    { name: 'NOVA',   col: '#ff0', track: 'house',     bpmBase: 100, glow: '#ff0' },
+    { name: 'BASSLINE', col: '#0f8', track: 'dnb',     bpmBase: 110, glow: '#0f8' }
   ];
 
-  // ---------- run state ----------
+  // ---------- persistent state ----------
   game.score = 0;
+  game.crowdHype = 0;
+  game.biggestStreak = 0;
+  game.bonusesTriggered = 0;
+  game.crowdSize = 0;
+  game.boothsDropped = 0;
+  game.rank = 'D';
   game.resultsState = game.resultsState || 'RESULTS';
-  var hype = 0;
-  var deadAir = 0;
-  var biggestStreak = 0;
-  var bonusesTriggered = 0;
-  var crowdSize = 0;
-  var dropped = 0;
-  var streak = 0;
-  var comboMult = 1;
 
-  var timeLeft = 120;
-  var setEnded = false;
+  var TIMER_START = 120;
+  game.setTimer = TIMER_START;
 
-  // phases: 'select' -> 'name' -> 'roam' -> 'mini' -> 'returning' -> 'done'
-  var phase = 'select';
-  var selIdx = 0;
-  var avatar = null;
+  // ---------- loadout (weakest, with model for progression) ----------
+  var loadout = game.loadout || {
+    needle:   { name: 'Bronze Needle', perfectWindow: 0.055, goodWindow: 0.12, mult: 1.0 },
+    mixer:    { name: '2-Channel Mixer', faders: 2, working: 1 },
+    speaker:  { name: '60-Watt Stack', hypeScale: 1.0 }
+  };
+  game.loadout = loadout;
+
+  // ---------- phases ----------
+  // 'avatar' -> 'name' -> game modes
+  var phase = 'avatar';
+  var selectedAvatar = 0;
   var djName = '';
-  var nameMax = 10;
-  var nameLetters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ';
-  var letIdx = 0;
+  var nameCursor = 0;
+  var NAME_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_';
 
-  // ---------- procedural floor / booths ----------
-  var home = { x: W * 0.5, y: H * 0.9 };
+  // ---------- music track (procedural beat clock per avatar) ----------
+  var music = {
+    avatar: AVATARS[0],
+    time: 0,
+    beatPhase: 0,
+    bpm: 80,
+    beatPulse: 0
+  };
+  function setTrack(av, bpm) {
+    music.avatar = av;
+    music.bpm = bpm;
+    music.time = 0;
+    music.beatPhase = 0;
+    music.beatPulse = 0;
+  }
+  function tickMusic(dt) {
+    music.time += dt;
+    var beatLen = 60 / music.bpm;
+    var prev = music.beatPhase;
+    music.beatPhase += dt / beatLen;
+    if (Math.floor(music.beatPhase) > Math.floor(prev)) music.beatPulse = 1;
+    music.beatPulse = Math.max(0, music.beatPulse - dt * 4);
+  }
+
+  // ---------- booths ----------
+  var HOME = { x: W * 0.5, y: H * 0.86 };
   var booths = [];
-  (function () {
-    var seed = 1337;
-    function rng() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+  (function buildBooths() {
+    var seed = 1234567;
+    function srand() { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; }
+    var slots = [
+      { x: W * 0.24, y: H * 0.64 },
+      { x: W * 0.76, y: H * 0.58 },
+      { x: W * 0.30, y: H * 0.30 },
+      { x: W * 0.70, y: H * 0.24 },
+      { x: W * 0.50, y: H * 0.12 }
+    ];
     for (var i = 0; i < 5; i++) {
-      var bx = 70 + rng() * (W - 140);
-      var by = 70 + rng() * (H * 0.6);
-      var dist = (i + 1) / 5; // normalized difficulty: nearer easier
+      var s = slots[i];
+      var jx = (srand() - 0.5) * 30, jy = (srand() - 0.5) * 30;
+      var bx = clamp(s.x + jx, 60, W - 60);
+      var by = clamp(s.y + jy, 60, H - 160);
+      var dx = bx - HOME.x, dy = by - HOME.y;
+      var d = Math.sqrt(dx * dx + dy * dy);
       booths.push({
-        x: bx, y: by, idx: i, dist: dist,
-        bpm: 80 + dist * 90,
-        density: 0.6 + dist * 0.8,
-        payout: Math.round(200 + dist * 800),
-        dropped: false
+        x: bx, y: by, dist: d, index: i,
+        bpm: 0,           // set when avatar chosen
+        bpmBoost: i * 22, // farther = faster
+        density: 0.45 + i * 0.12,
+        payout: 200 + i * 170,
+        dropped: false,
+        pulse: 0
       });
     }
   })();
 
-  // ---------- deck-cart (momentum) ----------
-  var cart = { x: home.x, y: home.y, vx: 0, vy: 0, accel: 480 };
-  var FWD_DAMP = 0.985;  // forward glides (damps slow)
-  var SKID_DAMP = 0.992; // lateral skid damps EVEN SLOWER than forward (per rules)
-  var MAXV = 360;
+  // ---------- cart (momentum physics) ----------
+  var cart = { x: HOME.x, y: HOME.y, vx: 0, vy: 0, r: 15, angle: 0 };
+  var ACCEL = 0.5;
+  var MAXV = 6.2;
 
-  // ---------- particles ----------
-  var particles = [];
-  function burst(x, y, n, col, spd) {
+  // ---------- modes ----------
+  var mode = 'roam'; // 'roam' | 'rhythm' | 'returning'
+  var setEnded = false;
+
+  // ---------- particles & juice ----------
+  var parts = [];
+  function spawnP(x, y, n, col, spd) {
     for (var i = 0; i < n; i++) {
-      var a = Math.random() * Math.PI * 2, s = spd * (0.3 + Math.random());
-      particles.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s,
-        life: 0.5 + Math.random() * 0.5, max: 1, col: col, r: 2 + Math.random() * 3 });
+      var a = Math.random() * Math.PI * 2;
+      var s = (0.4 + Math.random()) * (spd || 200);
+      parts.push({ x: x, y: y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.5 + Math.random() * 0.5, max: 1, col: col, r: 2 + Math.random() * 3 });
     }
+  }
+  function updParts(dt) {
+    for (var i = parts.length - 1; i >= 0; i--) {
+      var p = parts[i];
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.vx *= 0.92; p.vy *= 0.92;
+      p.life -= dt;
+      if (p.life <= 0) parts.splice(i, 1);
+    }
+  }
+  var shake = 0;
+  function addShake(v) { shake = Math.min(shake + v, 20); }
+
+  var feedTxt = '', feedT = 0, feedCol = '#fff';
+  function feedback(t, col) { feedTxt = t; feedT = 0.8; feedCol = col; }
+
+  // ---------- mini-game ----------
+  var mg = null;
+  function startMiniGame(booth) {
+    mode = 'rhythm';
+    setTrack(AVATARS[selectedAvatar], booth.bpm);
+    var beatGap = 60 / booth.bpm;
+    var notes = [];
+    var count = Math.round(10 + booth.density * 16);
+    var t = 1.4;
+    for (var i = 0; i < count; i++) {
+      notes.push({ lane: Math.random() < 0.5 ? 0 : 1, time: t, hit: false, judged: false, fade: 0 });
+      // notes land on musical beats; density picks half-beats sometimes
+      t += beatGap * (Math.random() < booth.density ? 0.5 : 1);
+    }
+    mg = {
+      booth: booth,
+      notes: notes,
+      time: 0,
+      marker: 0,
+      fallTime: 1.4,
+      misses: 0,
+      whiffed: false,
+      bonuses: { panel: 0, laser: 0, disco: 0, balloon: 0 },
+      combo: 0,
+      multiplier: 1,
+      flash: 0,
+      flashCol: '#fff',
+      lastJudge: '',
+      judgeTimer: 0,
+      dropLineY: H * 0.74
+    };
   }
 
-  // ---------- stackable dance-floor bonuses ----------
-  // Earned automatically as performance streak crosses thresholds (not manual keys).
-  var bonuses = [
-    { name: 'Floor Panels', streak: 4,  dur: 7, t: 0, given: false, col: '#08f' },
-    { name: 'Laser Beams',  streak: 8,  dur: 7, t: 0, given: false, col: '#0ff' },
-    { name: 'Disco Ball',   streak: 12, dur: 7, t: 0, given: false, col: '#ff0' },
-    { name: 'Balloon Drop', streak: 16, dur: 7, t: 0, given: false, col: '#f0f' }
-  ];
-  function checkBonusUnlocks() {
-    for (var i = 0; i < bonuses.length; i++) {
-      var b = bonuses[i];
-      if (!b.given && streak >= b.streak) {
-        b.given = true; b.t = b.dur; bonusesTriggered++;
-        burst(W * 0.5, H * 0.4, 30, b.col, 240);
-      }
-    }
-  }
-  function bonusMult() {
-    var m = 1;
-    for (var i = 0; i < bonuses.length; i++) if (bonuses[i].t > 0) m += 0.1;
+  function activeBonusMult() {
+    if (!mg) return 1;
+    var b = mg.bonuses, m = 1;
+    if (b.panel > 0) m += 0.1;
+    if (b.laser > 0) m += 0.1;
+    if (b.disco > 0) m += 0.1;
+    if (b.balloon > 0) m += 0.1;
     return m;
   }
 
-  // ---------- mini-game ----------
-  var mini = null;
-  function laneX(lane) { return W * 0.5 + (lane === 0 ? -90 : 90); }
+  function registerHit(quality, base) {
+    var bonusMult = activeBonusMult();
+    mg.combo++;
+    if (quality === 'PERFECT') mg.multiplier = 1 + Math.floor(mg.combo / 4) * 0.5;
+    var gainBase = quality === 'PERFECT' ? 45 : 24;
+    var deadDampen = 1; // dead air handled via combo reset
+    var gain = gainBase * base * loadout.needle.mult * loadout.speaker.hypeScale * mg.multiplier * bonusMult;
+    game.crowdHype += gain;
+    game.crowdSize += quality === 'PERFECT' ? 8 : 4;
+    if (mg.combo > game.biggestStreak) game.biggestStreak = mg.combo;
+    mg.flash = 0.22; mg.flashCol = quality === 'PERFECT' ? '#0ff' : '#5f5';
+    mg.lastJudge = quality; mg.judgeTimer = 0.7;
+    var px = (mg.marker === 0 ? W * 0.5 - 80 : W * 0.5 + 80);
+    spawnP(px, mg.dropLineY, quality === 'PERFECT' ? 26 : 14, mg.flashCol, 320);
+    addShake(quality === 'PERFECT' ? 8 : 4);
+    feedback(quality, mg.flashCol);
+  }
 
-  function startMini(booth) {
-    phase = 'mini';
-    var beat = 60 / booth.bpm;
-    var count = Math.round(10 + booth.density * 8);
-    var notes = [];
-    var scale = avatar.track.scale;
-    // notes spawned ON the music track's beat grid (rhythm sync to selected track)
-    for (var i = 0; i < count; i++) {
-      var step = scale[i % scale.length];
-      notes.push({
-        lane: (step % 2 === 0) ? 0 : 1, // melodic lane mapping from track scale
-        t: 1.4 + i * beat,
-        judged: false, hit: false
-      });
+  function registerMiss() {
+    mg.combo = 0; mg.multiplier = 1;
+    mg.misses++;
+    mg.flash = 0.25; mg.flashCol = '#f33';
+    addShake(7);
+    feedback('MISS', '#f55');
+    if (mg.misses >= 2) {
+      mg.whiffed = true;
+      feedback('WHIFF! SCRATCHED', '#f00');
+      addShake(16);
     }
-    mini = {
-      booth: booth, notes: notes, time: 0,
-      fallDur: 1.4, lineY: H * 0.78, marker: 0,
-      misses: 0, perfWin: loadout.needle.perfWin, goodWin: loadout.needle.goodWin,
-      flash: 0, shake: 0, judge: '', judgeT: 0, done: false,
-      targetZone: 1.0, beat: beat
-    };
   }
 
-  function endMini(cleared) {
-    var b = mini.booth;
-    if (cleared) {
-      b.dropped = true; dropped++;
-      hype += b.payout * 0.3;
-      crowdSize += Math.round(30 + b.dist * 80);
-      burst(b.x, b.y, 40, '#ff0', 300);
+  function registerDeadAir() {
+    mg.combo = 0; mg.multiplier = 1;
+    mg.flash = 0.15; mg.flashCol = '#f80';
+    feedback('OFF-BEAT', '#fa0');
+    addShake(3);
+  }
+
+  function tryBonus(key, streakReq, name, col) {
+    if (mg.combo < streakReq) return;
+    var b = mg.bonuses;
+    if (b[key] > 0) { b[key] = 4; return; }
+    b[key] = 4;
+    game.bonusesTriggered++;
+    spawnP(cart.x, mg.dropLineY, 30, col, 360);
+    addShake(8);
+    feedback(name + '!', col);
+  }
+
+  function endMiniGame(cleared) {
+    if (!mg) return;
+    var booth = mg.booth;
+    if (cleared && !booth.dropped) {
+      booth.dropped = true;
+      game.boothsDropped++;
+      var bonus = Math.round(booth.payout * (1 + booth.dist / Math.max(1, H)));
+      game.crowdHype += bonus;
+      game.crowdSize += 25 + booth.index * 14;
+      spawnP(booth.x, booth.y, 50, '#0ff', 420);
+      addShake(14);
+      feedback('CROWD ERUPTS!', '#0ff');
     }
-    mini = null;
-    if (dropped >= 5 && !setEnded) { beginReturn(); }
-    else { phase = setEnded ? 'returning' : 'roam'; if (setEnded) beginReturn(); }
+    mg = null;
+    mode = 'roam';
+    setTrack(AVATARS[selectedAvatar], AVATARS[selectedAvatar].bpmBase);
+    if (game.boothsDropped >= 5) triggerSetEnd();
   }
 
-  function registerHit(m, kind) {
-    streak++;
-    if (streak > biggestStreak) biggestStreak = streak;
-    comboMult = 1 + Math.floor(streak / 4) * 0.25;
-    checkBonusUnlocks();
-    var base = (kind === 'perfect' ? 14 : 8);
-    var deadFactor = clamp(1 - deadAir * 0.01, 0.3, 1);
-    hype += base * loadout.needle.mult * loadout.speaker.hypeGain *
-            comboMult * bonusMult() * deadFactor;
-    crowdSize += (kind === 'perfect' ? 3 : 1);
-    m.flash = 0.25; m.judge = kind.toUpperCase(); m.judgeT = 0.5;
-    burst(laneX(m.marker), m.lineY, kind === 'perfect' ? 18 : 10,
-          kind === 'perfect' ? avatar.track.col : '#0f8', 220);
+  function triggerSetEnd() {
+    if (setEnded) return;
+    setEnded = true;
+    mode = 'returning';
+    mg = null;
   }
 
-  function registerMiss(m) {
-    streak = 0; comboMult = 1;
-    deadAir += 2; m.misses++;
-    m.shake = 0.3; m.judge = 'MISS'; m.judgeT = 0.5;
-    burst(W * 0.5, m.lineY, 8, '#f44', 160);
-    if (m.misses >= 2) { m.judge = 'SCRATCHED!'; endMini(false); }
-  }
-
-  function registerOffbeat(m) {
-    streak = 0; comboMult = 1;
-    deadAir += 1; m.shake = 0.2; m.judge = 'OFF-BEAT'; m.judgeT = 0.4;
-  }
-
-  // ---------- phase transitions ----------
-  function beginReturn() { phase = 'returning'; setEnded = true; }
-
-  function recomputeScore() {
-    var distBonus = 0;
-    for (var i = 0; i < booths.length; i++)
-      if (booths[i].dropped) distBonus += booths[i].payout;
-    game.score = Math.max(0, Math.round(hype * comboMult * bonusMult() + distBonus));
-  }
-
-  function tallyAndFinish() {
-    phase = 'done';
-    recomputeScore();
-    crowdSize += Math.round(hype * 0.5);
-    game.result = {
-      djName: djName || 'DJ ???',
-      avatar: avatar ? avatar.name : '?',
-      track: avatar ? avatar.track.name : '?',
-      score: game.score,
-      biggestStreak: biggestStreak,
-      bonuses: bonusesTriggered,
-      crowd: crowdSize,
-      rank: rankBadge(game.score)
-    };
+  function finalizeResults() {
+    game.score = Math.max(0, Math.round(game.crowdHype));
+    var s = game.score;
+    if (s >= 4500) game.rank = 'S';
+    else if (s >= 3000) game.rank = 'A';
+    else if (s >= 1900) game.rank = 'B';
+    else if (s >= 950) game.rank = 'C';
+    else game.rank = 'D';
+    game.djName = djName || 'DJ';
+    game.avatar = AVATARS[selectedAvatar].name;
     R.go(game.resultsState);
   }
 
-  function rankBadge(s) {
-    if (s >= 6000) return 'S';
-    if (s >= 4000) return 'A';
-    if (s >= 2500) return 'B';
-    if (s >= 1200) return 'C';
-    return 'D';
-  }
-
-  // ============================================================
-  // UPDATE
-  // ============================================================
+  // ===================== UPDATE =====================
   function update(dt) {
     if (R.current() !== 'GAMEPLAY') return;
-    if (!isFinite(dt) || dt <= 0) dt = 1 / 60;
-    dt = Math.min(dt, 0.1);
-    var f = dt * 60;
+    if (dt <= 0 || dt > 0.2) dt = 1 / 60;
+    var k = dt * 60;
 
-    // particles
-    for (var i = particles.length - 1; i >= 0; i--) {
-      var p = particles[i];
-      p.x += p.vx * dt; p.y += p.vy * dt;
-      p.vx *= Math.pow(0.94, f); p.vy *= Math.pow(0.94, f); p.vy += 60 * dt;
-      p.life -= dt; if (p.life <= 0) particles.splice(i, 1);
-    }
-    // bonus timers
-    for (i = 0; i < bonuses.length; i++) if (bonuses[i].t > 0) bonuses[i].t = Math.max(0, bonuses[i].t - dt);
-
-    if (phase === 'select') { updateSelect(); return; }
-    if (phase === 'name') { updateName(); return; }
-    if (phase === 'done') return;
-
-    // live set timer
-    if ((phase === 'roam' || phase === 'mini') && !setEnded) {
-      timeLeft -= dt;
-      if (timeLeft <= 0) { timeLeft = 0; beginReturn(); }
+    shake *= Math.pow(0.85, k);
+    updParts(dt);
+    if (feedT > 0) feedT -= dt;
+    tickMusic(dt);
+    for (var bi = 0; bi < booths.length; bi++) {
+      if (booths[bi].pulse > 0) booths[bi].pulse -= dt * 2;
     }
 
-    if (phase === 'returning') { updateReturn(dt); return; }
-    if (phase === 'roam') { updateRoam(dt, f); recomputeScore(); return; }
-    if (phase === 'mini') { updateMini(dt); recomputeScore(); return; }
+    if (phase === 'avatar') { updateAvatarSelect(); return; }
+    if (phase === 'name') { updateNameEntry(); return; }
+
+    if (!setEnded && mode !== 'returning') {
+      game.setTimer -= dt;
+      if (game.setTimer <= 0) { game.setTimer = 0; triggerSetEnd(); }
+    }
+
+    if (mode === 'roam') updateRoam(dt, k);
+    else if (mode === 'rhythm') updateRhythm(dt);
+    else if (mode === 'returning') updateReturning(dt, k);
   }
 
-  function updateSelect() {
-    if (R.pressed('ArrowLeft')) selIdx = (selIdx + AVATARS.length - 1) % AVATARS.length;
-    if (R.pressed('ArrowRight')) selIdx = (selIdx + 1) % AVATARS.length;
+  // ---------- avatar select ----------
+  function updateAvatarSelect() {
+    if (R.pressed('ArrowLeft')) selectedAvatar = (selectedAvatar + AVATARS.length - 1) % AVATARS.length;
+    if (R.pressed('ArrowRight')) selectedAvatar = (selectedAvatar + 1) % AVATARS.length;
+    // mouse select
+    if (R.mouse.clicked) {
+      var n = AVATARS.length;
+      var slotW = W / n;
+      var idx = Math.floor(R.mouse.x / slotW);
+      if (idx >= 0 && idx < n) selectedAvatar = idx;
+    }
+    setTrack(AVATARS[selectedAvatar], AVATARS[selectedAvatar].bpmBase);
     if (R.pressed(' ') || R.pressed('Enter')) {
-      avatar = AVATARS[selIdx];
       phase = 'name';
     }
   }
 
-  function updateName() {
-    if (R.pressed('ArrowUp')) letIdx = (letIdx + nameLetters.length - 1) % nameLetters.length;
-    if (R.pressed('ArrowDown')) letIdx = (letIdx + 1) % nameLetters.length;
-    if (R.pressed('ArrowRight') || R.pressed(' ')) {
-      if (djName.length < nameMax) djName += nameLetters[letIdx];
+  // ---------- name entry ----------
+  function updateNameEntry() {
+    if (R.pressed('ArrowLeft')) nameCursor = (nameCursor + NAME_CHARS.length - 1) % NAME_CHARS.length;
+    if (R.pressed('ArrowRight')) nameCursor = (nameCursor + 1) % NAME_CHARS.length;
+    if (R.pressed('ArrowUp')) {
+      if (djName.length < 8) djName += NAME_CHARS.charAt(nameCursor);
     }
-    if (R.pressed('ArrowLeft')) djName = djName.slice(0, -1);
+    if (R.pressed('ArrowDown')) {
+      if (djName.length > 0) djName = djName.slice(0, -1);
+    }
+    if (R.pressed(' ') && djName.length < 8) djName += NAME_CHARS.charAt(nameCursor);
     if (R.pressed('Enter')) {
-      if (!djName) djName = 'DJ ' + avatar.name;
-      phase = 'roam';
+      if (djName.length === 0) djName = 'DJ';
+      // assign per-avatar BPM to booths
+      var av = AVATARS[selectedAvatar];
+      for (var i = 0; i < booths.length; i++) {
+        booths[i].bpm = av.bpmBase + booths[i].bpmBoost;
+      }
+      setTrack(av, av.bpmBase);
+      phase = 'play';
     }
   }
 
-  function updateRoam(dt, f) {
+  // ---------- roam (momentum) ----------
+  function updateRoam(dt, k) {
     var ax = 0, ay = 0;
-    if (R.keys['ArrowLeft']) ax -= 1;
-    if (R.keys['ArrowRight']) ax += 1;
-    if (R.keys['ArrowUp']) ay -= 1;
-    if (R.keys['ArrowDown']) ay += 1;
-    if (ax || ay) {
-      var mag = Math.hypot(ax, ay) || 1;
-      cart.vx += (ax / mag) * cart.accel * dt;
-      cart.vy += (ay / mag) * cart.accel * dt;
-    }
-    // forward (dominant axis) glides; lateral skid damps slower
-    var absx = Math.abs(cart.vx), absy = Math.abs(cart.vy);
-    if (absx >= absy) {
-      cart.vx *= Math.pow(FWD_DAMP, f);
-      cart.vy *= Math.pow(SKID_DAMP, f);
-    } else {
-      cart.vy *= Math.pow(FWD_DAMP, f);
-      cart.vx *= Math.pow(SKID_DAMP, f);
-    }
-    var sp = Math.hypot(cart.vx, cart.vy);
-    if (sp > MAXV) { cart.vx *= MAXV / sp; cart.vy *= MAXV / sp; }
+    if (R.keys['ArrowLeft']) ax -= ACCEL;
+    if (R.keys['ArrowRight']) ax += ACCEL;
+    if (R.keys['ArrowUp']) ay -= ACCEL;
+    if (R.keys['ArrowDown']) ay += ACCEL;
 
-    cart.x += cart.vx * dt;
-    cart.y += cart.vy * dt;
-    if (cart.x < 18) { cart.x = 18; cart.vx *= -0.4; }
-    if (cart.x > W - 18) { cart.x = W - 18; cart.vx *= -0.4; }
-    if (cart.y < 18) { cart.y = 18; cart.vy *= -0.4; }
-    if (cart.y > H - 18) { cart.y = H - 18; cart.vy *= -0.4; }
+    cart.vx += ax * k;
+    cart.vy += ay * k;
 
-    // cue a booth
-    var best = null, bd = 1e9;
-    for (var i = 0; i < booths.length; i++) {
-      var b = booths[i]; if (b.dropped) continue;
-      var d = Math.hypot(b.x - cart.x, b.y - cart.y);
-      if (d < bd) { bd = d; best = b; }
-    }
-    if (best && bd < 48 && (R.pressed(' ') || R.pressed('Enter'))) {
-      cart.vx = 0; cart.vy = 0;
-      startMini(best);
-    }
-  }
+    // forward drift damps faster; lateral skid damps slower
+    var fwdDamp = 0.96, latDamp = 0.986;
+    cart.vx *= Math.pow(latDamp, k);
+    cart.vy *= Math.pow(fwdDamp, k);
 
-  function updateReturn(dt) {
-    var dx = home.x - cart.x, dy = home.y - cart.y;
-    var d = Math.hypot(dx, dy);
-    if (d < 8) { cart.x = home.x; cart.y = home.y; tallyAndFinish(); return; }
-    cart.x += (dx / d) * 340 * dt;
-    cart.y += (dy / d) * 340 * dt;
-  }
+    var sp = Math.sqrt(cart.vx * cart.vx + cart.vy * cart.vy);
+    if (sp > MAXV) { cart.vx = cart.vx / sp * MAXV; cart.vy = cart.vy / sp * MAXV; }
+    if (sp > 0.2) cart.angle = Math.atan2(cart.vy, cart.vx);
 
-  function updateMini(dt) {
-    var m = mini; if (!m) return;
-    m.time += dt;
-    if (m.flash > 0) m.flash -= dt;
-    if (m.shake > 0) m.shake -= dt;
-    if (m.judgeT > 0) m.judgeT -= dt;
+    cart.x += cart.vx * k;
+    cart.y += cart.vy * k;
 
-    // tighten on-beat target zone over time
-    m.targetZone = clamp(1.0 - (m.time / (m.notes.length * m.beat + 2)) * 0.6, 0.4, 1.0);
+    if (cart.x < cart.r) { cart.x = cart.r; cart.vx = -cart.vx * 0.4; }
+    if (cart.x > W - cart.r) { cart.x = W - cart.r; cart.vx = -cart.vx * 0.4; }
+    if (cart.y < cart.r) { cart.y = cart.r; cart.vy = -cart.vy * 0.4; }
+    if (cart.y > H - cart.r) { cart.y = H - cart.r; cart.vy = -cart.vy * 0.4; }
 
-    if (R.pressed('ArrowLeft')) m.marker = 0;
-    if (R.pressed('ArrowRight')) m.marker = 1;
-
-    // strike
-    if (R.pressed(' ') || R.pressed('Enter')) {
-      var best = null, bd = 1e9;
-      for (var i = 0; i < m.notes.length; i++) {
-        var n = m.notes[i]; if (n.judged) continue;
-        var d = Math.abs(n.t - m.time);
-        if (d < bd) { bd = d; best = n; }
-      }
-      // windows scale with needle quality AND tightening zone
-      var pw = m.perfWin * m.targetZone;
-      var gw = m.goodWin * (0.6 + 0.4 * m.targetZone);
-      if (best && bd <= gw + 0.05) {
-        if (best.lane !== m.marker) { registerMiss(m); best.judged = true; }
-        else if (bd <= pw) { best.judged = true; best.hit = true; registerHit(m, 'perfect'); }
-        else if (bd <= gw) { best.judged = true; best.hit = true; registerHit(m, 'good'); }
-        else { best.judged = true; registerMiss(m); }
-      } else {
-        registerOffbeat(m);
-      }
-      if (!mini) return; // ended by whiff
-    }
-
-    // auto-miss notes that fully pass the line
-    for (var j = 0; j < m.notes.length; j++) {
-      var nt = m.notes[j];
-      if (!nt.judged && m.time - nt.t > m.goodWin + 0.1) {
-        nt.judged = true; registerMiss(m);
-        if (!mini) return;
-      }
-    }
-
-    // clear check
-    var allDone = true;
-    for (var z = 0; z < m.notes.length; z++) if (!m.notes[z].judged) { allDone = false; break; }
-    if (allDone) endMini(true);
-  }
-
-  // ============================================================
-  // DRAW
-  // ============================================================
-  function draw() {
-    var ctx = R.ctx;
-    ctx.fillStyle = '#0a0014';
-    ctx.fillRect(0, 0, W, H);
-
-    if (phase === 'select') { drawSelect(); return; }
-    if (phase === 'name') { drawName(); return; }
-
-    drawFloor();
-    drawBooths();
-    drawBonuses();
-    drawParticles();
-
-    if (phase === 'mini') drawMini();
-    else drawCart();
-
-    drawHUD();
-  }
-
-  function drawParticles() {
-    var ctx = R.ctx;
-    for (var i = 0; i < particles.length; i++) {
-      var p = particles[i];
-      ctx.globalAlpha = clamp(p.life / p.max, 0, 1);
-      ctx.fillStyle = p.col;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  function drawSelect() {
-    R.text('NEON DJ', W / 2, 60, 'bold 40px sans-serif', '#0ff', 'center');
-    R.text('PICK YOUR DJ', W / 2, 110, '18px sans-serif', '#f0f', 'center');
-    for (var i = 0; i < AVATARS.length; i++) {
-      var a = AVATARS[i];
-      var x = W / 2 + (i - 1) * 150;
-      var y = H / 2 - 20;
-      var sel = i === selIdx;
-      R.ctx.strokeStyle = sel ? a.track.col : '#333';
-      R.ctx.lineWidth = sel ? 3 : 1;
-      R.roundRect(x - 55, y - 60, 110, 130, 10);
-      R.ctx.stroke();
-      R.drawSpr(a.key, x - 32, y - 50, 64, 64);
-      R.text(a.name, x, y + 36, 'bold 18px sans-serif', sel ? a.track.col : '#aaa', 'center');
-      R.text(a.track.name, x, y + 56, '12px sans-serif', '#888', 'center');
-    }
-    R.text('< / >  choose    SPACE select', W / 2, H - 40, '14px sans-serif', '#0ff', 'center');
-  }
-
-  function drawName() {
-    R.text('NAME YOUR DJ', W / 2, 90, 'bold 28px sans-serif', avatar.track.col, 'center');
-    R.ctx.strokeStyle = '#0ff';
-    R.roundRect(W / 2 - 150, H / 2 - 30, 300, 60, 8);
-    R.ctx.stroke();
-    R.text(djName + '_', W / 2, H / 2 + 8, 'bold 26px monospace', '#fff', 'center');
-    R.text('letter: [ ' + nameLetters[letIdx] + ' ]', W / 2, H / 2 + 60, '18px monospace', '#f0f', 'center');
-    R.text('UP/DOWN pick letter   > add   < del   ENTER start',
-           W / 2, H - 40, '13px sans-serif', '#0ff', 'center');
-  }
-
-  function drawFloor() {
-    var ctx = R.ctx;
-    ctx.strokeStyle = 'rgba(0,180,255,0.08)';
-    ctx.lineWidth = 1;
-    for (var gx = 0; gx < W; gx += 48) { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke(); }
-    for (var gy = 0; gy < H; gy += 48) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke(); }
-    // home booth
-    ctx.fillStyle = '#114';
-    ctx.strokeStyle = '#0ff';
-    R.roundRect(home.x - 30, home.y - 18, 60, 36, 6); ctx.fill(); ctx.stroke();
-    R.text('HOME', home.x, home.y + 5, '11px sans-serif', '#0ff', 'center');
-  }
-
-  function drawBooths() {
-    var ctx = R.ctx;
     for (var i = 0; i < booths.length; i++) {
       var b = booths[i];
-      var col = b.dropped ? '#0f8' : (i < 2 ? '#0cf' : i < 4 ? '#fa0' : '#f0f');
-      var pulse = 0.5 + 0.5 * Math.sin(Date.now() / 250 + i);
-      ctx.globalAlpha = 0.3 + pulse * 0.4;
-      ctx.fillStyle = col;
-      ctx.beginPath(); ctx.arc(b.x, b.y, 26, 0, Math.PI * 2); ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = col; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(b.x, b.y, 20, 0, Math.PI * 2); ctx.stroke();
-      R.text(b.dropped ? '\u2713' : (i + 1), b.x, b.y + 5, 'bold 16px sans-serif', '#fff', 'center');
-      R.text(Math.round(b.bpm) + ' BPM', b.x, b.y + 38, '10px sans-serif', col, 'center');
+      if (b.dropped) continue;
+      if (dist2(cart, b) < 44 * 44) {
+        if (R.pressed(' ') || R.pressed('Enter')) {
+          cart.vx = 0; cart.vy = 0;
+          b.pulse = 1;
+          startMiniGame(b);
+          return;
+        }
+      }
     }
   }
 
-  function drawBonuses() {
-    var any = false;
-    for (var i = 0; i < bonuses.length; i++) if (bonuses[i].t > 0) any = true;
-    if (any) {
-      var ctx = R.ctx;
-      ctx.globalAlpha = 0.06 + 0.04 * Math.sin(Date.now() / 100);
-      ctx.fillStyle = avatar ? avatar.track.col : '#0ff';
-      ctx.fillRect(0, 0, W, H);
-      ctx.globalAlpha = 1;
+  // ---------- returning home ----------
+  function updateReturning(dt, k) {
+    var dx = HOME.x - cart.x, dy = HOME.y - cart.y;
+    var d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 8) {
+      cart.x = HOME.x; cart.y = HOME.y;
+      finalizeResults();
+      return;
     }
+    // momentum roll toward home
+    cart.vx += (dx / d) * ACCEL * 1.6 * k;
+    cart.vy += (dy / d) * ACCEL * 1.6 * k;
+    var sp = Math.sqrt(cart.vx * cart.vx + cart.vy * cart.vy);
+    if (sp > MAXV * 1.3) { cart.vx = cart.vx / sp * MAXV * 1.3; cart.vy = cart.vy / sp * MAXV * 1.3; }
+    cart.vx *= Math.pow(0.95, k);
+    cart.vy *= Math.pow(0.95, k);
+    cart.x += cart.vx * k;
+    cart.y += cart.vy * k;
+    cart.angle = Math.atan2(dy, dx);
+  }
+
+  // ---------- rhythm ----------
+  function updateRhythm(dt) {
+    if (!mg) { mode = 'roam'; return; }
+    mg.time += dt;
+    if (mg.judgeTimer > 0) mg.judgeTimer -= dt;
+    mg.flash = Math.max(0, mg.flash - dt);
+
+    var bn = mg.bonuses;
+    bn.panel = Math.max(0, bn.panel - dt);
+    bn.laser = Math.max(0, bn.laser - dt);
+    bn.disco = Math.max(0, bn.disco - dt);
+    bn.balloon = Math.max(0, bn.balloon - dt);
+
+    // mixer fader: only one working channel — represented by lane the fader can boost.
+    // The fader is the groove marker lane control.
+    if (R.pressed('ArrowLeft')) mg.marker = 0;
+    if (R.pressed('ArrowRight')) mg.marker = 1;
+
+    // streak-unlocked dance-floor bonuses
+    if (R.pressed('a')) tryBonus('panel', 3, 'FLOOR PANEL', '#f0f');
+    if (R.pressed('s')) tryBonus('laser', 5, 'LASER', '#0ff');
+    if (R.pressed('d')) tryBonus('disco', 7, 'DISCO BALL', '#ff0');
+    if (R.pressed('f')) tryBonus('balloon', 9, 'BALLOON DROP', '#0f8');
+
+    var pW = loadout.needle.perfectWindow;
+    var gW = loadout.needle.goodWindow;
+    // tighten window as notes deplete (tightening target zone)
+    var judged = 0;
+    for (var c = 0; c < mg.notes.length; c++) if (mg.notes[c].judged) judged++;
+    var tighten = clamp(1 - (judged / mg.notes.length) * 0.4, 0.6, 1);
+    var perfectWindow = pW * tighten;
+    var goodWindow = gW * tighten;
+
+    // strike
+    if (R.pressed(' ') || R.pressed('Enter') || R.pressed('ArrowUp')) {
+      var best = null, bestErr = 1e9;
+      for (var i = 0; i < mg.notes.length; i++) {
+        var n = mg.notes[i];
+        if (n.judged) continue;
+        var err = Math.abs(mg.time - n.time);
+        if (err < goodWindow && err < bestErr) { bestErr = err; best = n; }
+      }
+      if (best) {
+        if (best.lane !== mg.marker) {
+          best.judged = true; best.fade = 0.3;
+          registerMiss();
+        } else if (bestErr <= perfectWindow) {
+          best.judged = true; best.hit = true; best.fade = 0.3;
+          registerHit('PERFECT', 1.0);
+        } else {
+          best.judged = true; best.hit = true; best.fade = 0.3;
+          registerHit('GOOD', 0.55);
+        }
+      } else {
+        registerDeadAir();
+      }
+    }
+
+    // missed (passed line)
+    for (var j = 0; j < mg.notes.length; j++) {
+      var nn = mg.notes[j];
+      if (nn.judged) continue;
+      if (mg.time > nn.time + goodWindow) {
+        nn.judged = true; nn.fade = 0.3;
+        registerMiss();
+        if (mg.whiffed) break;
+      }
+    }
+
+    if (mg.whiffed) { endMiniGame(false); return; }
+
+    var allJudged = true;
+    for (var q = 0; q < mg.notes.length; q++) {
+      if (!mg.notes[q].judged) { allJudged = false; break; }
+    }
+    if (allJudged) { endMiniGame(true); return; }
+
+    // recompute live score
+    game.score = Math.round(game.crowdHype);
+  }
+
+  // ===================== DRAW =====================
+  function drawBackground() {
+    var ctx = R.ctx;
+    ctx.fillStyle = '#0a0a18';
+    ctx.fillRect(0, 0, W, H);
+    // floor grid pulsing to beat
+    var pulse = music.beatPulse;
+    ctx.save();
+    ctx.globalAlpha = 0.25 + pulse * 0.3;
+    ctx.strokeStyle = music.avatar.glow;
+    ctx.lineWidth = 1;
+    var gs = 48;
+    for (var x = 0; x <= W; x += gs) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (var y = 0; y <= H; y += gs) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+    ctx.restore();
   }
 
   function drawCart() {
     var ctx = R.ctx;
     ctx.save();
     ctx.translate(cart.x, cart.y);
-    ctx.fillStyle = '#222';
-    ctx.strokeStyle = avatar ? avatar.track.col : '#0ff';
+    ctx.rotate(cart.angle);
+    ctx.shadowBlur = 16;
+    ctx.shadowColor = music.avatar.glow;
+    // deck-cart body
+    ctx.fillStyle = '#1a1a2e';
+    R.roundRect(-16, -11, 32, 22, 5);
+    ctx.fill();
+    ctx.strokeStyle = music.avatar.glow;
     ctx.lineWidth = 2;
-    R.roundRect(-22, -14, 44, 28, 6); ctx.fill(); ctx.stroke();
-    if (avatar) R.drawSpr(avatar.key, -16, -34, 32, 32);
-    ctx.fillStyle = avatar ? avatar.track.col : '#0ff';
-    ctx.beginPath(); ctx.arc(-10, 16, 5, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(10, 16, 5, 0, Math.PI * 2); ctx.fill();
+    R.roundRect(-16, -11, 32, 22, 5);
+    ctx.stroke();
+    // turntable platters
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = '#0ff';
+    ctx.beginPath(); ctx.arc(-7, 0, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f0f';
+    ctx.beginPath(); ctx.arc(7, 0, 5, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 
-  function drawMini() {
-    var m = mini; var ctx = R.ctx;
-    var sx = m.shake > 0 ? (Math.random() - 0.5) * 12 : 0;
-    var sy = m.shake > 0 ? (Math.random() - 0.5) * 12 : 0;
-    ctx.save();
-    ctx.translate(sx, sy);
-
-    // backdrop panel
-    ctx.fillStyle = 'rgba(0,0,20,0.85)';
-    ctx.fillRect(W * 0.5 - 150, 30, 300, H - 110);
-    ctx.strokeStyle = avatar.track.col; ctx.lineWidth = 2;
-    R.roundRect(W * 0.5 - 150, 30, 300, H - 110, 10); ctx.stroke();
-
-    // lanes
-    for (var l = 0; l < 2; l++) {
-      var lx = laneX(l);
-      ctx.strokeStyle = 'rgba(0,200,255,0.25)';
-      ctx.beginPath(); ctx.moveTo(lx, 40); ctx.lineTo(lx, m.lineY + 30); ctx.stroke();
+  function drawBooths() {
+    var ctx = R.ctx;
+    for (var i = 0; i < booths.length; i++) {
+      var b = booths[i];
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      var lit = !b.dropped;
+      var glow = b.dropped ? '#444' : (i < 2 ? '#0f8' : i < 4 ? '#ff0' : '#f33');
+      var p = 0.5 + 0.5 * Math.sin(music.time * 4 + i) + b.pulse;
+      ctx.shadowBlur = b.dropped ? 4 : 14 + p * 8;
+      ctx.shadowColor = glow;
+      ctx.fillStyle = b.dropped ? '#222' : '#16162a';
+      R.roundRect(-26, -20, 52, 40, 7);
+      ctx.fill();
+      ctx.strokeStyle = glow;
+      ctx.lineWidth = 2;
+      R.roundRect(-26, -20, 52, 40, 7);
+      ctx.stroke();
+      // platter
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = b.dropped ? '#333' : glow;
+      ctx.beginPath(); ctx.arc(0, 0, 9 + (lit ? p * 2 : 0), 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+      R.text(b.dropped ? 'DROPPED' : (b.bpm | 0) + 'BPM', b.x, b.y + 32, '9px monospace', b.dropped ? '#555' : glow, 'center');
     }
+  }
 
-    // drop line + tightening target zone
-    ctx.strokeStyle = m.flash > 0 ? '#fff' : avatar.track.col;
-    ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(W * 0.5 - 130, m.lineY); ctx.lineTo(W * 0.5 + 130, m.lineY); ctx.stroke();
-    var zoneH = 30 * m.targetZone;
-    ctx.globalAlpha = 0.2;
-    ctx.fillStyle = avatar.track.col;
-    ctx.fillRect(W * 0.5 - 130, m.lineY - zoneH, 260, zoneH * 2);
-    ctx.globalAlpha = 1;
-
-    // falling notes
-    for (var i = 0; i < m.notes.length; i++) {
-      var n = m.notes[i];
-      if (n.judged) continue;
-      var prog = (m.time - (n.t - m.fallDur)) / m.fallDur;
-      if (prog < 0) continue;
-      var ny = 40 + prog * (m.lineY - 40);
-      ctx.fillStyle = avatar.track.col;
-      ctx.beginPath(); ctx.arc(laneX(n.lane), ny, 12, 0, Math.PI * 2); ctx.fill();
+  function drawParts() {
+    var ctx = R.ctx;
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      ctx.save();
+      ctx.globalAlpha = clamp(p.life, 0, 1);
+      ctx.fillStyle = p.col;
+      ctx.shadowBlur = 8; ctx.shadowColor = p.col;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
     }
-
-    // groove marker
-    ctx.fillStyle = '#fff';
-    ctx.strokeStyle = avatar.track.col; ctx.lineWidth = 3;
-    R.roundRect(laneX(m.marker) - 18, m.lineY - 10, 36, 20, 5);
-    ctx.fill(); ctx.stroke();
-
-    if (m.judgeT > 0) {
-      var jc = m.judge === 'PERFECT' ? '#0ff' : m.judge === 'GOOD' ? '#0f8' : '#f44';
-      R.text(m.judge, W * 0.5, m.lineY - 50, 'bold 24px sans-serif', jc, 'center');
-    }
-
-    R.text(m.booth.bpm.toFixed(0) + ' BPM \u00B7 ' + avatar.track.name,
-           W * 0.5, 55, '13px sans-serif', avatar.track.col, 'center');
-    R.text('MISSES ' + m.misses + '/2', W * 0.5, H - 95, '12px sans-serif',
-           m.misses >= 1 ? '#f44' : '#888', 'center');
-    R.text('LEFT/RIGHT slide  \u00B7  SPACE strike on beat',
-           W * 0.5, H - 75, '12px sans-serif', '#0ff', 'center');
-    ctx.restore();
   }
 
   function drawHUD() {
     var ctx = R.ctx;
-    ctx.fillStyle = 'rgba(0,0,0,0.4)';
-    ctx.fillRect(0, 0, W, 28);
-    R.text('TIME ' + Math.ceil(timeLeft), 10, 19, 'bold 14px monospace',
-           timeLeft < 20 ? '#f44' : '#0ff', 'left');
-    R.text('HYPE ' + Math.round(hype), 120, 19, 'bold 14px monospace', '#0f8', 'left');
-    R.text('x' + comboMult.toFixed(2), 260, 19, 'bold 14px monospace', '#ff0', 'left');
-    R.text('STREAK ' + streak, 330, 19, 'bold 14px monospace', '#f0f', 'left');
-    R.text('SCORE ' + game.score, W - 10, 19, 'bold 14px monospace', '#0ff', 'right');
-    R.text('BOOTHS ' + dropped + '/5', W - 10, H - 8, '12px sans-serif', '#0cf', 'right');
-    R.text('DEAD AIR ' + deadAir, 10, H - 8, '12px sans-serif', '#a44', 'left');
-    if (djName) R.text(djName, W * 0.5, H - 8, '12px sans-serif', avatar.track.col, 'center');
+    // top bar
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(0, 0, W, 30);
+    ctx.restore();
+    var mins = Math.floor(game.setTimer / 60);
+    var secs = Math.floor(game.setTimer % 60);
+    var tcol = game.setTimer < 20 ? '#f55' : '#fff';
+    R.text((mins < 10 ? '0' : '') + mins + ':' + (secs < 10 ? '0' : '') + secs, W * 0.5, 20, 'bold 16px monospace', tcol, 'center');
+    R.text('HYPE ' + Math.round(game.crowdHype), 10, 20, '13px monospace', '#0ff', 'left');
+    R.text('BOOTHS ' + game.boothsDropped + '/5', W - 10, 20, '13px monospace', '#f0f', 'right');
+    R.text(djName || 'DJ', 10, H - 8, '11px monospace', music.avatar.glow, 'left');
+    R.text('CROWD ' + game.crowdSize, W - 10, H - 8, '11px monospace', '#ff0', 'right');
+  }
 
-    // active bonus chips
-    var bx = 10;
-    for (var i = 0; i < bonuses.length; i++) {
-      if (bonuses[i].t > 0) {
-        R.text(bonuses[i].name + ' +10%', bx, 46, '11px sans-serif', bonuses[i].col, 'left');
-        bx += 0; // stacked vertically below
-      }
+  function drawRhythm() {
+    if (!mg) return;
+    var ctx = R.ctx;
+    // panel backdrop
+    ctx.save();
+    if (mg.flash > 0) {
+      ctx.fillStyle = mg.flashCol;
+      ctx.globalAlpha = mg.flash * 0.5;
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = 1;
     }
-    var by = 46;
-    for (i = 0; i < bonuses.length; i++) {
-      if (bonuses[i].t > 0) {
-        R.ctx.fillStyle = bonuses[i].col;
-        R.text(bonuses[i].name + ' +10%', 10, by, '11px sans-serif', bonuses[i].col, 'left');
-        by += 16;
-      }
+    ctx.fillStyle = 'rgba(5,5,18,0.78)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+
+    var laneW = 90;
+    var cx = W * 0.5;
+    var laneX = [cx - laneW * 0.55, cx + laneW * 0.55];
+    var topY = 60;
+    var dropY = mg.dropLineY;
+
+    // lanes
+    for (var l = 0; l < 2; l++) {
+      ctx.save();
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = l === mg.marker ? music.avatar.glow : '#444';
+      ctx.fillRect(laneX[l] - laneW * 0.45, topY, laneW * 0.9, dropY - topY + 40);
+      ctx.restore();
     }
+
+    // drop line with tightening target zone
+    var judged = 0;
+    for (var c = 0; c < mg.notes.length; c++) if (mg.notes[c].judged) judged++;
+    var tighten = clamp(1 - (judged / mg.notes.length) * 0.4, 0.6, 1);
+    var beatNear = music.beatPulse;
+    ctx.save();
+    ctx.shadowBlur = 14 + beatNear * 10;
+    ctx.shadowColor = '#0ff';
+    ctx.strokeStyle = '#0ff';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx - laneW, dropY); ctx.lineTo(cx + laneW, dropY);
+    ctx.stroke();
+    // target zone box on marker lane
+    var zoneH = 26 * tighten;
+    ctx.globalAlpha = 0.4 + beatNear * 0.3;
+    ctx.fillStyle = music.avatar.glow;
+    ctx.fillRect(laneX[mg.marker] - laneW * 0.42, dropY - zoneH, laneW * 0.84, zoneH * 2);
+    ctx.restore();
+
+    // notes (fall mapped from time)
+    var look = mg.fallTime;
+    for (var i = 0; i < mg.notes.length; i++) {
+      var n = mg.notes[i];
+      var rel = n.time - mg.time; // seconds until it should hit
+      if (n.judged && n.fade <= 0) continue;
+      if (!n.judged && (rel > look || rel < -0.3)) continue;
+      var ny = dropY - (rel / look) * (dropY - topY);
+      var nx = laneX[n.lane];
+      ctx.save();
+      if (n.judged) {
+        n.fade -= 1 / 60;
+        ctx.globalAlpha = clamp(n.fade / 0.3, 0, 1);
+      }
+      ctx.shadowBlur = 12; ctx.shadowColor = n.hit ? '#0ff' : (n.lane === 0 ? '#0ff' : '#f0f');
+      ctx.fillStyle = n.hit ? '#0ff' : (n.lane === 0 ? '#0ff' : '#f0f');
+      R.roundRect(nx - 22, ny - 9, 44, 18, 6);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // groove marker (the mixer fader)
+    ctx.save();
+    ctx.shadowBlur = 18; ctx.shadowColor = music.avatar.glow;
+    ctx.fillStyle = music.avatar.glow;
+    var mx = laneX[mg.marker];
+    ctx.beginPath();
+    ctx.moveTo(mx, dropY + 22);
+    ctx.lineTo(mx - 12, dropY + 40);
+    ctx.lineTo(mx + 12, dropY + 40);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+
+    // judge text
+    if (mg.judgeTimer > 0) {
+      R.text(mg.lastJudge, cx, dropY - 60, 'bold 26px monospace',
+        mg.lastJudge === 'PERFECT' ? '#0ff' : mg.lastJudge === 'GOOD' ? '#5f5' : '#f55', 'center');
+    }
+
+    // mini HUD
+    R.text('COMBO ' + mg.combo + '  x' + mg.multiplier.toFixed(1), cx, 38, 'bold 14px monospace', '#fff', 'center');
+    R.text('MISS ' + mg.misses + '/2', cx, topY - 22, '12px monospace', mg.misses >= 1 ? '#f55' : '#888', 'center');
+
+    // bonus availability
+    var by = H - 60;
+    var labels = [
+      { k: 'A', n: 'PANEL', req: 3, on: mg.bonuses.panel > 0, col: '#f0f' },
+      { k: 'S', n: 'LASER', req: 5, on: mg.bonuses.laser > 0, col: '#0ff' },
+      { k: 'D', n: 'DISCO', req: 7, on: mg.bonuses.disco > 0, col: '#ff0' },
+      { k: 'F', n: 'BALLOON', req: 9, on: mg.bonuses.balloon > 0, col: '#0f8' }
+    ];
+    for (var bI = 0; bI < labels.length; bI++) {
+      var lb = labels[bI];
+      var avail = mg.combo >= lb.req;
+      var bx = 40 + bI * (W - 80) / 4;
+      R.text('[' + lb.k + '] ' + lb.n, bx, by,
+        '11px monospace', lb.on ? lb.col : (avail ? '#fff' : '#555'), 'left');
+    }
+
+    if (feedT > 0) R.text(feedTxt, cx, H * 0.4, 'bold 22px monospace', feedCol, 'center');
+  }
+
+  function drawAvatarSelect() {
+    var ctx = R.ctx;
+    ctx.fillStyle = '#08081a';
+    ctx.fillRect(0, 0, W, H);
+    R.text('PICK YOUR DJ', W * 0.5, 60, 'bold 28px monospace', '#0ff', 'center');
+    R.text('< LEFT / RIGHT >   SPACE to confirm', W * 0.5, 92, '13px monospace', '#aaa', 'center');
+    var n = AVATARS.length;
+    var slotW = W / n;
+    for (var i = 0; i < n; i++) {
+      var av = AVATARS[i];
+      var x = slotW * i + slotW * 0.5;
+      var y = H * 0.45;
+      var sel = i === selectedAvatar;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.shadowBlur = sel ? 22 : 8;
+      ctx.shadowColor = av.glow;
+      ctx.fillStyle = sel ? '#1c1c34' : '#12121f';
+      R.roundRect(-slotW * 0.36, -55, slotW * 0.72, 110, 10);
+      ctx.fill();
+      ctx.strokeStyle = av.glow;
+      ctx.lineWidth = sel ? 3 : 1;
+      R.roundRect(-slotW * 0.36, -55, slotW * 0.72, 110, 10);
+      ctx.stroke();
+      // headphone avatar
+      ctx.shadowBlur = sel ? 16 : 6;
+      ctx.fillStyle = av.col;
+      ctx.beginPath(); ctx.arc(0, -10, 20, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, -10, 26, Math.PI, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+      R.text(av.name, x, y + 45, 'bold 14px monospace', sel ? av.col : '#888', 'center');
+      R.text(av.track, x, y + 64, '10px monospace', sel ? '#fff' : '#555', 'center');
+    }
+  }
+
+  function drawNameEntry() {
+    var ctx = R.ctx;
+    ctx.fillStyle = '#08081a';
+    ctx.fillRect(0, 0, W, H);
+    var av = AVATARS[selectedAvatar];
+    R.text('NAME YOUR DJ', W * 0.5, 70, 'bold 26px monospace', av.glow, 'center');
+    // current name
+    ctx.save();
+    ctx.shadowBlur = 12; ctx.shadowColor = av.glow;
+    R.text((djName || '_') + (djName.length < 8 ? '|' : ''), W * 0.5, H * 0.42, 'bold 36px monospace', '#fff', 'center');
+    ctx.restore();
+    // char picker
+    R.text('< char >  UP add  DOWN del  ENTER start', W * 0.5, H * 0.42 + 50, '12px monospace', '#aaa', 'center');
+    ctx.save();
+    ctx.shadowBlur = 14; ctx.shadowColor = av.glow;
+    R.text(NAME_CHARS.charAt(nameCursor), W * 0.5, H * 0.42 + 95, 'bold 30px monospace', av.glow, 'center');
+    ctx.restore();
+    R.text('LOADOUT: ' + loadout.needle.name + ' / ' + loadout.mixer.name + ' / ' + loadout.speaker.name,
+      W * 0.5, H - 40, '10px monospace', '#666', 'center');
+  }
+
+  function draw() {
+    var ctx = R.ctx;
+    ctx.save();
+    if (shake > 0.5) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+
+    if (phase === 'avatar') { drawAvatarSelect(); ctx.restore(); return; }
+    if (phase === 'name') { drawNameEntry(); ctx.restore(); return; }
+
+    drawBackground();
+    drawBooths();
+    if (mode !== 'rhythm') {
+      // home booth marker
+      ctx.save();
+      ctx.shadowBlur = 12; ctx.shadowColor = '#fff';
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      R.roundRect(HOME.x - 22, HOME.y - 16, 44, 32, 6); ctx.stroke();
+      ctx.restore();
+      R.text('HOME', HOME.x, HOME.y + 28, '9px monospace', '#fff', 'center');
+      drawCart();
+      // cue hint
+      for (var i = 0; i < booths.length; i++) {
+        var b = booths[i];
+        if (!b.dropped && dist2(cart, b) < 44 * 44) {
+          R.text('SPACE: CUE RECORD', cart.x, cart.y - 26, '11px monospace', '#0ff', 'center');
+        }
+      }
+      if (mode === 'returning') R.text('ROLLING HOME...', W * 0.5, H * 0.5, 'bold 18px monospace', '#0ff', 'center');
+    }
+    drawParts();
+    drawHUD();
+    if (mode === 'rhythm') drawRhythm();
+
+    ctx.restore();
   }
 
   return { update: update, draw: draw };
