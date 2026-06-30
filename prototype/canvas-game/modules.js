@@ -17,7 +17,7 @@
   var rand = function (a, b) { return a + Math.random() * (b - a); };
 
   function nexts(state) { return (state.next || []); }
-  function bg(state, fallback) { R.drawBg(state.cfg && state.cfg.asset ? state.cfg.asset : null, fallback); }
+  function bg(state, fallback) { return R.drawBg(state.cfg && state.cfg.asset ? state.cfg.asset : null, fallback); }
 
   /* ===== SCREENS ===== */
 
@@ -49,15 +49,18 @@
   // them) so it navigates the real flow. This is what makes the prototype show the designed screens.
   S.Screen = function (state, config, game) {
     return function () {
-      bg(state, '#0e1b2a'); R.clearBtns();
-      R.text((state.cfg && state.cfg.title) || state.name, R.W / 2, 54, '800 26px Trebuchet MS', '#eaf2ff');
+      // Missing backdrop art → a clean WHITE screen (not a broken/dark one); switch text to dark so it
+      // stays readable. Present art → the image + light text as before.
+      var hasArt = bg(state, '#ffffff'); R.clearBtns();
+      var fg = hasArt ? '#eaf2ff' : '#1a2530';
+      R.text((state.cfg && state.cfg.title) || state.name, R.W / 2, 54, '800 26px Trebuchet MS', fg);
       var ns = nexts(state), labels = (state.cfg && state.cfg.navLabels) || [];
       var y = R.H / 2 - (ns.length * 33);
       ns.forEach(function (target, i) {
         R.addBtn(R.W / 2 - 150, y + i * 66, 300, 50, labels[i] || target,
           (function (t) { return function () { R.go(t); }; })(target));
       });
-      if (!ns.length) R.text('— end of flow —', R.W / 2, R.H / 2, '16px Trebuchet MS', '#7f93a4');
+      if (!ns.length) R.text('— end of flow —', R.W / 2, R.H / 2, '16px Trebuchet MS', hasArt ? '#7f93a4' : '#8aa');
       R.drawBtns();
     };
   };

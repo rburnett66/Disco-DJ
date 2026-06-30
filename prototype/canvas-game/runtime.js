@@ -80,7 +80,8 @@
       if (ir > cr) { dh = CH; dw = CH * ir; dx = (CW - dw) / 2; dy = 0; }
       else { dw = CW; dh = CW / ir; dx = 0; dy = (CH - dh) / 2; }
       ctx.drawImage(im, dx, dy, dw, dh);
-    } else { ctx.fillStyle = fallback || '#13314e'; ctx.fillRect(0, 0, CW, CH); }
+      return true;                       // drew the real backdrop
+    } else { ctx.fillStyle = fallback || '#13314e'; ctx.fillRect(0, 0, CW, CH); return false; }  // fell back to a colour
   }
   function roundRect(x, y, w, h, r) {
     ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r);
