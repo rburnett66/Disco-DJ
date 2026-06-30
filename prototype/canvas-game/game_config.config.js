@@ -9,11 +9,11 @@ window.GAME_CONFIG = {
   },
   "first": "MENU",
   "labels": {
-    "characterPrompt": "Pick your DJ and enter your stage name",
-    "locationPrompt": "Choose your nightclub",
-    "locationCta": "Confirm Loadout",
-    "action": "Drop",
-    "finish": "End Set",
+    "characterPrompt": "Pick your DJ and enter a stage name",
+    "locationPrompt": "Choose your nightclub venue",
+    "locationCta": "Confirm Gear",
+    "action": "Cue Record",
+    "finish": "Roll Home",
     "count": "Booths Dropped",
     "results": "Set Results",
     "unit": "booths",
@@ -23,8 +23,8 @@ window.GAME_CONFIG = {
     "miniGame": "Track Drop",
     "tiers": [
       "",
-      "Opener",
-      "Resident",
+      "Local Opener",
+      "Club Resident",
       "Headliner"
     ]
   },
@@ -64,10 +64,21 @@ window.GAME_CONFIG = {
     ],
     "locations": [
       {
-        "name": "Neon Lounge",
+        "name": "Mellow Lounge",
         "diff": "1",
         "mix": [
           3,
+          1,
+          1,
+          0,
+          0
+        ]
+      },
+      {
+        "name": "Neon Club",
+        "diff": "2",
+        "mix": [
+          2,
           2,
           1,
           0,
@@ -75,43 +86,32 @@ window.GAME_CONFIG = {
         ]
       },
       {
-        "name": "Midnight Club",
-        "diff": "2",
-        "mix": [
-          2,
-          2,
-          2,
-          1,
-          0
-        ]
-      },
-      {
-        "name": "Laser Warehouse",
+        "name": "Laser Palace",
         "diff": "3",
         "mix": [
           1,
           1,
           2,
-          2,
-          1
+          1,
+          0
         ]
       },
       {
-        "name": "Mainstage Megaclub",
+        "name": "Mega Disco",
         "diff": "4",
         "mix": [
           0,
           1,
+          1,
           2,
-          3,
-          2
+          1
         ]
       }
     ],
     "gear": [
       {
         "label": "Deck",
-        "name": "Battered Dual Turntable"
+        "name": "Battered Dual Turntable "
       },
       {
         "label": "Mixer",
@@ -123,7 +123,7 @@ window.GAME_CONFIG = {
       },
       {
         "label": "Speaker",
-        "name": "60-Watt Stack"
+        "name": "60-Watt Speaker Stack"
       }
     ],
     "itemTypes": [
@@ -137,7 +137,7 @@ window.GAME_CONFIG = {
         "type": "Mixer"
       },
       {
-        "type": "Speaker"
+        "type": "Speaker Rig"
       }
     ]
   },
